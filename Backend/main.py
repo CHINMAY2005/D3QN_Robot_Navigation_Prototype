@@ -13,6 +13,7 @@ Run with:
 """
 
 import math
+import random
 from typing import Literal
 
 from fastapi import FastAPI
@@ -101,6 +102,9 @@ class StepRequest(BaseModel):
     )
     goal_reward: float = Field(default=500.0, description="Reward for reaching the goal")
     collision_reward: float = Field(default=-100.0, description="Penalty for collision or out of bounds")
+    goal_x: float = Field(default=520.0, description="Dynamic Goal X coordinate")
+    goal_y: float = Field(default=200.0, description="Dynamic Goal Y coordinate")
+    noise_level: float = Field(default=0.0, description="Actuator noise magnitude")
 
 
 class StepResponse(BaseModel):
@@ -200,8 +204,13 @@ def step(request: StepRequest) -> StepResponse:
     angular_velocity = ANGULAR_VELOCITIES[request.action]
     linear_velocity = LINEAR_VELOCITY
     
-    dist_to_goal = compute_distance(request.x, request.y, GOAL_X, GOAL_Y)
-    if dist_to_goal < LINEAR_VELOCITY * TIME_STEP:
+    # Actuator Noise Simulation
+    if request.noise_level > 0.0:
+        angular_velocity += random.uniform(-1.0, 1.0) * request.noise_level
+        linear_velocity += random.uniform(-0.15, 0.15) * request.noise_level * linear_velocity
+
+    dist_to_goal = compute_distance(request.x, request.y, request.goal_x, request.goal_y)
+    if dist_to_goal < linear_velocity * TIME_STEP:
         linear_velocity = dist_to_goal / TIME_STEP
 
     # 2. Integrate kinematics (simple differential-drive / unicycle model).
@@ -210,8 +219,8 @@ def step(request: StepRequest) -> StepResponse:
     new_y = request.y + linear_velocity * math.sin(new_theta) * TIME_STEP
 
     # 3. Compute new distance to goal and heading error.
-    current_distance = compute_distance(new_x, new_y, GOAL_X, GOAL_Y)
-    theta_error = compute_theta_error(new_x, new_y, new_theta, GOAL_X, GOAL_Y)
+    current_distance = compute_distance(new_x, new_y, request.goal_x, request.goal_y)
+    theta_error = compute_theta_error(new_x, new_y, new_theta, request.goal_x, request.goal_y)
 
     # 4. Base reward.
     r_d, r_theta, reward = compute_reward(current_distance, request.prev_distance, theta_error, request.reward_type)

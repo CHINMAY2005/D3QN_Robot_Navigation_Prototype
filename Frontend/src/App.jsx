@@ -669,7 +669,7 @@ export default function App() {
     if (!robotState) return;
     const { x, y, theta } = robotState;
     const d = distanceTo(x, y, GOAL);
-    const dMax = distanceTo(START.x, START.y, GOAL);
+    const dMax = distanceTo(startPositions[selectedRobotIndex].x, startPositions[selectedRobotIndex].y, GOAL);
     const distFactor = Math.max(0, 1.0 - d / dMax);
     
     let collisionRisk = 0;

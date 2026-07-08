@@ -13,7 +13,6 @@ Run with:
 """
 
 import math
-import random
 from typing import Literal
 
 from fastapi import FastAPI
@@ -102,9 +101,9 @@ class StepRequest(BaseModel):
     )
     goal_reward: float = Field(default=500.0, description="Reward for reaching the goal")
     collision_reward: float = Field(default=-100.0, description="Penalty for collision or out of bounds")
-    goal_x: float = Field(default=520.0, description="Dynamic Goal X coordinate")
-    goal_y: float = Field(default=200.0, description="Dynamic Goal Y coordinate")
-    noise_level: float = Field(default=0.0, description="Actuator noise magnitude")
+    goal_x: float = Field(default=520.0, description="Target goal x coordinate")
+    goal_y: float = Field(default=200.0, description="Target goal y coordinate")
+    noise_level: float = Field(default=0.0, description="Standard deviation for Gaussian noise in actuator actions")
 
 
 class StepResponse(BaseModel):
@@ -203,14 +202,17 @@ def step(request: StepRequest) -> StepResponse:
     # 1. Map discrete action to angular velocity, use fixed linear velocity.
     angular_velocity = ANGULAR_VELOCITIES[request.action]
     linear_velocity = LINEAR_VELOCITY
-    
-    # Actuator Noise Simulation
-    if request.noise_level > 0.0:
-        angular_velocity += random.uniform(-1.0, 1.0) * request.noise_level
-        linear_velocity += random.uniform(-0.15, 0.15) * request.noise_level * linear_velocity
 
+    # Apply Gaussian actuator/motion noise if noise_level > 0.0
+    if request.noise_level > 0.0:
+        import random
+        # Perturb angular velocity (std dev proportional to noise_level)
+        angular_velocity += random.gauss(0.0, request.noise_level * 1.5)
+        # Perturb linear velocity (std dev proportional to noise_level, keep positive)
+        linear_velocity = max(0.0, linear_velocity + random.gauss(0.0, request.noise_level * 8.0))
+    
     dist_to_goal = compute_distance(request.x, request.y, request.goal_x, request.goal_y)
-    if dist_to_goal < linear_velocity * TIME_STEP:
+    if dist_to_goal < LINEAR_VELOCITY * TIME_STEP:
         linear_velocity = dist_to_goal / TIME_STEP
 
     # 2. Integrate kinematics (simple differential-drive / unicycle model).

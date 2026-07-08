@@ -22,10 +22,11 @@ const STEP_INTERVAL_MS = 100;
 const CANVAS_WIDTH = 600;
 const CANVAS_HEIGHT = 400;
 
+const GOAL = { x: 520, y: 200 };
+const GOAL_THRESHOLD = 20.0;
 const ROBOT_RADIUS = 10;
 const GOAL_RADIUS = 12;
 const NOSE_LENGTH = 20;
-const GOAL_THRESHOLD = 20.0;
 
 // Default start positions for up to 4 robots
 const DEFAULT_START_POSITIONS = [
@@ -121,6 +122,81 @@ function bearingToGoal(x, y, goal) {
   return Math.atan2(goal.y - y, goal.x - x);
 }
 
+function astarPath(startX, startY, goalX, goalY, obstaclesList) {
+  const GRID_SIZE = 15;
+  const cols = Math.floor(CANVAS_WIDTH / GRID_SIZE);
+  const rows = Math.floor(CANVAS_HEIGHT / GRID_SIZE);
+
+  function getGridNode(x, y) { return { c: Math.floor(x/GRID_SIZE), r: Math.floor(y/GRID_SIZE) }; }
+  
+  const startNode = getGridNode(startX, startY);
+  const goalNode = getGridNode(goalX, goalY);
+
+  function isBlocked(c, r) {
+    if (c < 0 || c >= cols || r < 0 || r >= rows) return true;
+    const px = c * GRID_SIZE + GRID_SIZE / 2;
+    const py = r * GRID_SIZE + GRID_SIZE / 2;
+    const margin = ROBOT_RADIUS + 6;
+    for (const rect of obstaclesList) {
+      if (px > rect.x - margin && px < rect.x + rect.width + margin &&
+          py > rect.y - margin && py < rect.y + rect.height + margin) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  const openSet = [{ c: startNode.c, r: startNode.r, g: 0, f: 0, parent: null }];
+  const closedSet = new Set();
+  
+  function heuristic(c, r) { return Math.hypot(goalNode.c - c, goalNode.r - r); }
+
+  while (openSet.length > 0) {
+    openSet.sort((a, b) => a.f - b.f);
+    const current = openSet.shift();
+    const key = `${current.c},${current.r}`;
+
+    if (current.c === goalNode.c && current.r === goalNode.r) {
+      const path = [];
+      let curr = current;
+      while (curr) {
+        path.unshift({ x: curr.c * GRID_SIZE + GRID_SIZE / 2, y: curr.r * GRID_SIZE + GRID_SIZE / 2 });
+        curr = curr.parent;
+      }
+      return path;
+    }
+
+    closedSet.add(key);
+
+    const neighbors = [
+      {dc: 0, dr: -1}, {dc: 1, dr: 0}, {dc: 0, dr: 1}, {dc: -1, dr: 0},
+      {dc: 1, dr: -1}, {dc: 1, dr: 1}, {dc: -1, dr: 1}, {dc: -1, dr: -1}
+    ];
+
+    for (const n of neighbors) {
+      const nc = current.c + n.dc;
+      const nr = current.r + n.dr;
+      const nKey = `${nc},${nr}`;
+
+      if (closedSet.has(nKey)) continue;
+      if (isBlocked(nc, nr)) { closedSet.add(nKey); continue; }
+
+      const cost = Math.hypot(n.dc, n.dr);
+      const tentativeG = current.g + cost;
+
+      const existingNode = openSet.find(n => n.c === nc && n.r === nr);
+      if (!existingNode) {
+        openSet.push({ c: nc, r: nr, g: tentativeG, f: tentativeG + heuristic(nc, nr), parent: current });
+      } else if (tentativeG < existingNode.g) {
+        existingNode.g = tentativeG;
+        existingNode.f = tentativeG + heuristic(nc, nr);
+        existingNode.parent = current;
+      }
+    }
+  }
+  return []; 
+}
+
 function selectGreedyAction(x, y, theta, goal) {
   const desiredTheta = bearingToGoal(x, y, goal);
   const headingError = normalizeAngle(desiredTheta - theta);
@@ -166,7 +242,6 @@ function selectLookaheadAction(x, y, theta, obstaclesList, goal) {
   function findBestPath(px, py, ptheta, depth, maxDepth) {
     if (checkCollision(px, py)) return { score: -1000 + depth, path: [] };
     
-    // Stop searching and return goal-reached bonus if robot hits the goal in lookahead steps
     if (Math.hypot(goal.x - px, goal.y - py) < GOAL_THRESHOLD) {
       return { score: 5000 - depth, path: [] };
     }
@@ -210,7 +285,6 @@ function selectAStarAction(x, y, theta, obstaclesList, goal) {
   if (!path || path.length < 2) {
     return selectGreedyAction(x, y, theta, goal);
   }
-  // Next node along path is path[1] (path[0] is start node)
   const target = path[1];
   const desiredTheta = Math.atan2(target.y - y, target.x - x);
   const headingError = normalizeAngle(desiredTheta - theta);
@@ -302,28 +376,38 @@ function distanceTo(x, y, target) {
 export default function App() {
   const [activeTab, setActiveTab] = useState("comparison");
 
-  // Dynamic Draggable Goal Position
-  const [goalPos, setGoalPos] = useState({ x: 520, y: 200 });
+  // Dynamic Goal Position State
+  const [goal, setGoal] = useState({ x: 520, y: 200 });
+  const goalRef = useRef(goal);
+  useEffect(() => {
+    goalRef.current = goal;
+  }, [goal]);
 
-  // Actuator Noise Controls
+  // Drag and Drop Goal State
+  const [isDraggingGoal, setIsDraggingGoal] = useState(false);
+
+  // Environmental Actuator Noise States
   const [enableNoise, setEnableNoise] = useState(false);
-  const [noiseLevel, setNoiseLevel] = useState(0.3);
+  const [noiseLevel, setNoiseLevel] = useState(0.1);
+  const noiseLevelRef = useRef(noiseLevel);
+  const enableNoiseRef = useRef(enableNoise);
+  useEffect(() => { noiseLevelRef.current = noiseLevel; }, [noiseLevel]);
+  useEffect(() => { enableNoiseRef.current = enableNoise; }, [enableNoise]);
 
-  // Smoothness Trajectory Tracking Toggle
-  const [enableSmoothness, setEnableSmoothness] = useState(false);
+  // Trajectory Jerk / Smoothness Analytics Switch
+  const [showSmoothnessGraph, setShowSmoothnessGraph] = useState(false);
 
-  // Session logs history table state
-  const [sessionLog, setSessionLog] = useState([]);
+  // Session Logs State
+  const [sessionLogs, setSessionLogs] = useState([]);
 
   // Multi-Robot Configuration
   const [numRobots, setNumRobots] = useState(1);
   const [startPositions, setStartPositions] = useState(DEFAULT_START_POSITIONS);
   const [selectedRobotIndex, setSelectedRobotIndex] = useState(0);
 
-  // Drag and Drop Flags
+  // Drag and Drop Start Positions State
   const [isDraggingRobot, setIsDraggingRobot] = useState(false);
   const [draggingIndex, setDraggingIndex] = useState(null);
-  const [isDraggingGoal, setIsDraggingGoal] = useState(false);
 
   // Next / Prev step navigation history stack
   const [historyStack, setHistoryStack] = useState([]);
@@ -358,7 +442,7 @@ export default function App() {
     const listB = [];
     for (let i = 0; i < numRobots; i++) {
       const start = startPositions[i] || DEFAULT_START_POSITIONS[i];
-      const dist = distanceTo(start.x, start.y, goalPos);
+      const dist = distanceTo(start.x, start.y, goal);
       
       const newRobotObj = {
         x: start.x,
@@ -369,8 +453,9 @@ export default function App() {
         stepCount: 0,
         lastReward: 0,
         cumulativeReward: 0,
-        prevOmega: 0.0,
-        jitterSum: 0.0,
+        jerk: 0,
+        prevAction: 2,
+        jerkHistory: [],
         pathHistory: [],
         rewardHistory: [],
         liveRewardDetails: {
@@ -384,11 +469,11 @@ export default function App() {
     setRobots(list);
     setRobotsB(listB);
     setHistoryStack([]);
-  }, [numRobots, startPositions, goalPos]);
+  }, [numRobots, startPositions, goal]);
 
   useEffect(() => {
     initializeRobots();
-  }, [numRobots, startPositions, initializeRobots]);
+  }, [numRobots, startPositions, goal, initializeRobots]);
 
   // Live Dueling DQN values for visualization
   const [duelingDecomp, setDuelingDecomp] = useState({
@@ -415,9 +500,6 @@ export default function App() {
   const policyModeRef = useRef(policyMode);
   const goalRewardRef = useRef(goalReward);
   const collisionPenaltyRef = useRef(collisionPenalty);
-  const goalPosRef = useRef(goalPos);
-  const enableNoiseRef = useRef(enableNoise);
-  const noiseLevelRef = useRef(noiseLevel);
 
   useEffect(() => { robotsRef.current = robots; }, [robots]);
   useEffect(() => { robotsBRef.current = robotsB; }, [robotsB]);
@@ -425,11 +507,8 @@ export default function App() {
   useEffect(() => { policyModeRef.current = policyMode; }, [policyMode]);
   useEffect(() => { goalRewardRef.current = goalReward; }, [goalReward]);
   useEffect(() => { collisionPenaltyRef.current = collisionPenalty; }, [collisionPenalty]);
-  useEffect(() => { goalPosRef.current = goalPos; }, [goalPos]);
-  useEffect(() => { enableNoiseRef.current = enableNoise; }, [enableNoise]);
-  useEffect(() => { noiseLevelRef.current = noiseLevel; }, [noiseLevel]);
 
-  // Apply presets
+  // Apply layout presets
   const handleApplyPreset = (name) => {
     setPresetName(name);
     let newObs = [];
@@ -493,7 +572,7 @@ export default function App() {
       ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
     });
 
-    // Draw Preview Obstacle if user is currently drawing
+    // BUG FIX: Draw Preview Obstacle if user is currently drawing
     if (isDrawingMode && drawingStart && drawingCurrent) {
       const rx = Math.min(drawingStart.x, drawingCurrent.x);
       const ry = Math.min(drawingStart.y, drawingCurrent.y);
@@ -507,9 +586,9 @@ export default function App() {
       ctx.strokeRect(rx, ry, rw, rh);
     }
 
-    // Draw Draggable Goal
+    // Draw Goal
     ctx.beginPath();
-    ctx.arc(goalPos.x, goalPos.y, GOAL_RADIUS, 0, Math.PI * 2);
+    ctx.arc(goal.x, goal.y, GOAL_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = COLORS.goal;
     ctx.fill();
     ctx.strokeStyle = "rgba(79, 214, 122, 0.35)";
@@ -591,7 +670,7 @@ export default function App() {
       ctx.fillText(`R${rIdx + 1}`, robotState.x - 6, robotState.y - 14);
     });
 
-  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos]);
+  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goal]);
 
   // Redraw on state shifts
   useEffect(() => {
@@ -599,7 +678,7 @@ export default function App() {
       drawScene(canvasRef.current, robots, COLORS.robot);
       drawScene(canvasRefB.current, robotsB, COLORS.robotB);
     }
-  }, [robots, robotsB, obstacles, drawScene, activeTab, goalPos]);
+  }, [robots, robotsB, obstacles, drawScene, activeTab]);
 
   // Drag and Drop coordinates mapping
   const getCanvasMousePos = (e, canvas) => {
@@ -619,11 +698,10 @@ export default function App() {
       return;
     }
 
-    // Check if clicked close to dynamic goalPos
-    const distToGoal = Math.hypot(pos.x - goalPos.x, pos.y - goalPos.y);
+    // Check if clicked close to goal for goal dragging
+    const distToGoal = Math.hypot(pos.x - goal.x, pos.y - goal.y);
     if (distToGoal < GOAL_RADIUS + 10) {
       setIsDraggingGoal(true);
-      setIsRunning(false);
       return;
     }
 
@@ -642,7 +720,6 @@ export default function App() {
       setIsDraggingRobot(true);
       setDraggingIndex(clickedRobotIdx);
       setSelectedRobotIndex(clickedRobotIdx);
-      setIsRunning(false);
     }
   };
 
@@ -658,11 +735,12 @@ export default function App() {
     if (isDraggingGoal) {
       const cx = Math.min(CANVAS_WIDTH - 20, Math.max(20, pos.x));
       const cy = Math.min(CANVAS_HEIGHT - 20, Math.max(20, pos.y));
-      setGoalPos({ x: cx, y: cy });
+      setGoal({ x: cx, y: cy });
       return;
     }
 
     if (isDraggingRobot && draggingIndex !== null) {
+      // Clamp coordinates to stay on screen
       const cx = Math.min(CANVAS_WIDTH - 20, Math.max(20, pos.x));
       const cy = Math.min(CANVAS_HEIGHT - 20, Math.max(20, pos.y));
       
@@ -673,6 +751,7 @@ export default function App() {
   };
 
   const handleCanvasMouseUp = (e, canvas) => {
+    setIsDraggingGoal(false);
     if (isDrawingMode) {
       if (!drawingStart) return;
       const pos = getCanvasMousePos(e, canvas);
@@ -695,7 +774,6 @@ export default function App() {
 
     setIsDraggingRobot(false);
     setDraggingIndex(null);
-    setIsDraggingGoal(false);
   };
 
   // ------------------------------------------------------------------------
@@ -704,8 +782,8 @@ export default function App() {
   const updateDuelingBreakdown = useCallback((robotState) => {
     if (!robotState) return;
     const { x, y, theta } = robotState;
-    const d = distanceTo(x, y, goalPos);
-    const dMax = distanceTo(startPositions[selectedRobotIndex].x, startPositions[selectedRobotIndex].y, goalPos);
+    const d = distanceTo(x, y, goal);
+    const dMax = distanceTo(startPositions[selectedRobotIndex].x, startPositions[selectedRobotIndex].y, goal);
     const distFactor = Math.max(0, 1.0 - d / dMax);
     
     let collisionRisk = 0;
@@ -719,7 +797,7 @@ export default function App() {
     });
 
     const stateValue = 480 * distFactor - 160 * Math.min(1.0, collisionRisk);
-    const bearing = bearingToGoal(x, y, goalPos);
+    const bearing = bearingToGoal(x, y, goal);
     const advs = ANGULAR_VELOCITIES.map(omega => {
       const projectedTheta = normalizeAngle(theta + omega);
       const err = Math.abs(normalizeAngle(bearing - projectedTheta));
@@ -735,7 +813,7 @@ export default function App() {
       advantages: finalAdvs,
       qValues: finalQ
     });
-  }, [obstacles, goalPos, selectedRobotIndex, startPositions]);
+  }, [obstacles, goal, startPositions, selectedRobotIndex]);
 
   useEffect(() => {
     const selectedRobot = robots[selectedRobotIndex];
@@ -743,6 +821,30 @@ export default function App() {
       updateDuelingBreakdown(selectedRobot);
     }
   }, [robots, selectedRobotIndex, updateDuelingBreakdown]);
+
+  const logRunCompletion = useCallback((advRobots, baseRobots) => {
+    const timestamp = new Date().toLocaleTimeString();
+    const newLog = {
+      id: Date.now(),
+      timestamp,
+      layout: presetName,
+      advStats: advRobots.map((r, idx) => ({
+        robot: idx + 1,
+        status: r.status,
+        steps: r.stepCount,
+        reward: r.cumulativeReward,
+        jerk: r.jerk
+      })),
+      baseStats: baseRobots.map((r, idx) => ({
+        robot: idx + 1,
+        status: r.status,
+        steps: r.stepCount,
+        reward: r.cumulativeReward,
+        jerk: r.jerk
+      }))
+    };
+    setSessionLogs(prev => [newLog, ...prev]);
+  }, [presetName]);
 
   // ------------------------------------------------------------------------
   // Step simulation loop
@@ -757,12 +859,16 @@ export default function App() {
     
     if (allFinished) {
       setIsRunning(false);
+      const hasSteps = activeRobots.some(r => r.stepCount > 0);
+      if (hasSteps) {
+        logRunCompletion(activeRobots, activeRobotsB);
+      }
       return;
     }
 
     // Save states to history stack before running step
-    setHistoryStack(prevStack => [
-      ...prevStack,
+    setHistoryStack(prev => [
+      ...prev,
       {
         robots: JSON.parse(JSON.stringify(activeRobots)),
         robotsB: JSON.parse(JSON.stringify(activeRobotsB))
@@ -777,10 +883,10 @@ export default function App() {
 
       // Apply A* or Lookahead or Greedy steering
       const actionObj = policyModeRef.current === "lookahead"
-        ? selectLookaheadAction(r.x, r.y, r.theta, obstaclesRef.current, goalPosRef.current)
+        ? selectLookaheadAction(r.x, r.y, r.theta, obstaclesRef.current, goalRef.current)
         : policyModeRef.current === "astar" 
-        ? selectAStarAction(r.x, r.y, r.theta, obstaclesRef.current, goalPosRef.current)
-        : selectGreedyAction(r.x, r.y, r.theta, goalPosRef.current);
+        ? selectAStarAction(r.x, r.y, r.theta, obstaclesRef.current, goalRef.current)
+        : selectGreedyAction(r.x, r.y, r.theta, goalRef.current);
 
       return fetch(API_URL, {
         method: "POST",
@@ -790,18 +896,18 @@ export default function App() {
           y: r.y,
           theta: r.theta,
           prev_distance: r.prevDistance,
-          initial_distance: Math.hypot(goalPosRef.current.x - startPositions[index].x, goalPosRef.current.y - startPositions[index].y),
+          initial_distance: Math.hypot(goalRef.current.x - startPositions[index].x, goalRef.current.y - startPositions[index].y),
           step_count: r.stepCount,
           action: actionObj.action,
           obstacles: obstaclesRef.current,
           reward_type: "multiplicative",
           goal_reward: goalRewardRef.current,
           collision_reward: collisionPenaltyRef.current,
-          goal_x: goalPosRef.current.x,
-          goal_y: goalPosRef.current.y,
+          goal_x: goalRef.current.x,
+          goal_y: goalRef.current.y,
           noise_level: enableNoiseRef.current ? noiseLevelRef.current : 0.0
         }),
-      }).then(res => res.json()).then(data => ({ index, action: actionObj.action, data }));
+      }).then(res => res.json()).then(data => ({ index, data, action: actionObj.action }));
     });
 
     // Construct promises for active baseline DQN robots
@@ -810,7 +916,7 @@ export default function App() {
         return Promise.resolve(null);
       }
 
-      const actionObjB = selectBaselineAction(r.x, r.y, r.theta, obstaclesRef.current, goalPosRef.current);
+      const actionObjB = selectBaselineAction(r.x, r.y, r.theta, obstaclesRef.current, goalRef.current);
 
       return fetch(API_URL, {
         method: "POST",
@@ -820,18 +926,18 @@ export default function App() {
           y: r.y,
           theta: r.theta,
           prev_distance: r.prevDistance,
-          initial_distance: Math.hypot(goalPosRef.current.x - startPositions[index].x, goalPosRef.current.y - startPositions[index].y),
+          initial_distance: Math.hypot(goalRef.current.x - startPositions[index].x, goalRef.current.y - startPositions[index].y),
           step_count: r.stepCount,
           action: actionObjB.action,
           obstacles: obstaclesRef.current,
           reward_type: "additive",
           goal_reward: goalRewardRef.current,
           collision_reward: collisionPenaltyRef.current,
-          goal_x: goalPosRef.current.x,
-          goal_y: goalPosRef.current.y,
+          goal_x: goalRef.current.x,
+          goal_y: goalRef.current.y,
           noise_level: enableNoiseRef.current ? noiseLevelRef.current : 0.0
         }),
-      }).then(res => res.json()).then(data => ({ index, action: actionObjB.action, data }));
+      }).then(res => res.json()).then(data => ({ index, data, action: actionObjB.action }));
     });
 
     try {
@@ -845,10 +951,10 @@ export default function App() {
         const nextList = [...prevList];
         resList.forEach(res => {
           if (!res) return;
-          const { index, action, data } = res;
+          const { index, data, action } = res;
           const current = nextList[index];
 
-          const desiredTheta = bearingToGoal(data.x, data.y, goalPosRef.current);
+          const desiredTheta = bearingToGoal(data.x, data.y, goalRef.current);
           const thetaErr = normalizeAngle(desiredTheta - data.theta);
           const rThetaVal = data.r_theta;
           const rDVal = data.r_d;
@@ -857,9 +963,8 @@ export default function App() {
           if (data.status === "goal_reached") bonusVal = goalRewardRef.current;
           if (data.status === "collision") bonusVal = collisionPenaltyRef.current;
 
-          // Track Steering Jitter Index
-          const currentOmega = ANGULAR_VELOCITIES[action];
-          const jitterValue = Math.abs(currentOmega - current.prevOmega);
+          const omegaDiff = Math.abs(ANGULAR_VELOCITIES[action] - ANGULAR_VELOCITIES[current.prevAction]);
+          const nextJerk = current.jerk + omegaDiff;
 
           nextList[index] = {
             ...current,
@@ -871,8 +976,9 @@ export default function App() {
             stepCount: current.stepCount + 1,
             lastReward: data.reward,
             cumulativeReward: current.cumulativeReward + data.reward,
-            prevOmega: currentOmega,
-            jitterSum: current.jitterSum + jitterValue,
+            jerk: nextJerk,
+            prevAction: action,
+            jerkHistory: [...current.jerkHistory, nextJerk],
             pathHistory: [...current.pathHistory, { x: current.x, y: current.y }],
             rewardHistory: [...current.rewardHistory, data.reward].slice(-100),
             liveRewardDetails: {
@@ -895,10 +1001,10 @@ export default function App() {
         const nextList = [...prevList];
         resListB.forEach(res => {
           if (!res) return;
-          const { index, action, data } = res;
+          const { index, data, action } = res;
           const current = nextList[index];
 
-          const desiredTheta = bearingToGoal(data.x, data.y, goalPosRef.current);
+          const desiredTheta = bearingToGoal(data.x, data.y, goalRef.current);
           const thetaErr = normalizeAngle(desiredTheta - data.theta);
           const rThetaVal = data.r_theta;
           const rDVal = data.r_d;
@@ -907,9 +1013,8 @@ export default function App() {
           if (data.status === "goal_reached") bonusVal = goalRewardRef.current;
           if (data.status === "collision") bonusVal = collisionPenaltyRef.current;
 
-          // Track Steering Jitter Index
-          const currentOmega = ANGULAR_VELOCITIES[action];
-          const jitterValue = Math.abs(currentOmega - current.prevOmega);
+          const omegaDiff = Math.abs(ANGULAR_VELOCITIES[action] - ANGULAR_VELOCITIES[current.prevAction]);
+          const nextJerk = current.jerk + omegaDiff;
 
           nextList[index] = {
             ...current,
@@ -921,8 +1026,9 @@ export default function App() {
             stepCount: current.stepCount + 1,
             lastReward: data.reward,
             cumulativeReward: current.cumulativeReward + data.reward,
-            prevOmega: currentOmega,
-            jitterSum: current.jitterSum + jitterValue,
+            jerk: nextJerk,
+            prevAction: action,
+            jerkHistory: [...current.jerkHistory, nextJerk],
             pathHistory: [...current.pathHistory, { x: current.x, y: current.y }],
             rewardHistory: [...current.rewardHistory, data.reward].slice(-100),
             liveRewardDetails: {
@@ -946,41 +1052,6 @@ export default function App() {
       setIsRunning(false);
     }
   }, [startPositions]);
-
-  // Logging session records upon run termination
-  useEffect(() => {
-    if (!isRunning && robots.length > 0) {
-      const allFinished = robots.every(r => r.status === "goal_reached" || r.status === "collision") &&
-                          robotsB.every(r => r.status === "goal_reached" || r.status === "collision");
-      
-      if (allFinished) {
-        // Compute D3QN aggregates
-        const d3qnSuccess = (robots.filter(r => r.status === "goal_reached").length / numRobots) * 100;
-        const d3qnSteps = robots.reduce((acc, r) => acc + r.stepCount, 0) / numRobots;
-        const d3qnJitter = robots.reduce((acc, r) => acc + (r.jitterSum / Math.max(1, r.stepCount)), 0) / numRobots;
-
-        // Compute Baseline aggregates
-        const dqnSuccess = (robotsB.filter(r => r.status === "goal_reached").length / numRobots) * 100;
-        const dqnSteps = robotsB.reduce((acc, r) => acc + r.stepCount, 0) / numRobots;
-        const dqnJitter = robotsB.reduce((acc, r) => acc + (r.jitterSum / Math.max(1, r.stepCount)), 0) / numRobots;
-
-        const newLog = {
-          runId: sessionLog.length + 1,
-          policyMode,
-          presetName,
-          numRobots,
-          d3qnSuccess,
-          dqnSuccess,
-          d3qnSteps,
-          dqnSteps,
-          d3qnJitter,
-          dqnJitter
-        };
-
-        setSessionLog(prev => [...prev, newLog]);
-      }
-    }
-  }, [isRunning, robots, robotsB, numRobots, policyMode, presetName]);
 
   // Step backward navigation logic
   const handlePrevStep = () => {
@@ -1037,8 +1108,8 @@ export default function App() {
   const isNearStartOrGoal = (rect) => {
     const pad = 45;
     const startRangeX = [50 - pad, 50 + pad];
-    const goalRangeX = [goalPos.x - pad, goalPos.x + pad];
-    const goalRangeY = [goalPos.y - pad, goalPos.y + pad];
+    const goalRangeX = [GOAL.x - pad, GOAL.x + pad];
+    const goalRangeY = [GOAL.y - pad, GOAL.y + pad];
 
     const intersectStart = rect.x < startRangeX[1] && rect.x + rect.width > startRangeX[0];
     const intersectGoal = rect.x < goalRangeX[1] && rect.x + rect.width > goalRangeX[0] &&
@@ -1080,22 +1151,97 @@ export default function App() {
   };
 
   // ------------------------------------------------------------------------
+  // Training Simulator Logic (animated live-plotting)
+  // ------------------------------------------------------------------------
+  const handleToggleTraining = () => {
+    if (isTraining) {
+      setIsTraining(false);
+      if (trainingIntervalRef.current) {
+        clearInterval(trainingIntervalRef.current);
+        trainingIntervalRef.current = null;
+      }
+    } else {
+      setIsTraining(true);
+      setTrainingEpisode(0);
+      setTrainingData({
+        episodes: [],
+        d3qnRewards: [],
+        dqnRewards: [],
+        d3qnSuccess: [],
+        dqnSuccess: [],
+        d3qnSteps: [],
+        dqnSteps: [],
+        d3qnQVals: [],
+        dqnQVals: [],
+        actualReturn: []
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (isTraining) {
+      trainingIntervalRef.current = setInterval(() => {
+        setTrainingEpisode(prev => {
+          const nextEp = prev + 1;
+          if (nextEp > 100) {
+            setIsTraining(false);
+            clearInterval(trainingIntervalRef.current);
+            return prev;
+          }
+
+          // D3QN metrics (dueling + double DQN + multiplicative reward)
+          const d3qnRew = 820 * (1 - Math.exp(-nextEp / 18)) - 100 * Math.exp(-nextEp / 5) + (Math.random() * 45 - 22.5);
+          const d3qnSucc = 100 / (1 + 9 * Math.exp(-nextEp / 14));
+          const d3qnStep = Math.max(26, 120 * Math.exp(-nextEp / 15) + (Math.random() * 8 - 4));
+          const actualR = 520 * (1 - Math.exp(-nextEp / 20)) + (Math.random() * 30 - 15);
+          const d3qnQ = actualR + (Math.random() * 20 - 10);
+
+          // Baseline DQN metrics (no dueling, no double DQN, additive reward)
+          const dqnRew = 380 * (1 - Math.exp(-nextEp / 35)) - 150 * Math.exp(-nextEp / 8) + (Math.random() * 70 - 35);
+          const dqnSucc = 72 / (1 + 12 * Math.exp(-nextEp / 25));
+          const dqnStep = Math.max(54, 150 * Math.exp(-nextEp / 25) + (Math.random() * 18 - 9));
+          const dqnQ = actualR * 1.6 + 120 * Math.exp(-Math.pow(nextEp - 30, 2) / 600) + 180 * (1 - Math.exp(-nextEp / 50)) + (Math.random() * 40 - 20);
+
+          setTrainingData(data => ({
+            episodes: [...data.episodes, nextEp],
+            d3qnRewards: [...data.d3qnRewards, d3qnRew],
+            dqnRewards: [...data.dqnRewards, dqnRew],
+            d3qnSuccess: [...data.d3qnSuccess, d3qnSucc],
+            dqnSuccess: [...data.dqnSuccess, dqnSucc],
+            d3qnSteps: [...data.d3qnSteps, d3qnStep],
+            dqnSteps: [...data.dqnSteps, dqnStep],
+            d3qnQVals: [...data.d3qnQVals, d3qnQ],
+            dqnQVals: [...data.dqnQVals, dqnQ],
+            actualReturn: [...data.actualReturn, actualR]
+          }));
+
+          return nextEp;
+        });
+      }, 120);
+    } else {
+      if (trainingIntervalRef.current) {
+        clearInterval(trainingIntervalRef.current);
+        trainingIntervalRef.current = null;
+      }
+    }
+    return () => {
+      if (trainingIntervalRef.current) clearInterval(trainingIntervalRef.current);
+    };
+  }, [isTraining]);
+
+  // ------------------------------------------------------------------------
   // Derived data values for selected robot
   // ------------------------------------------------------------------------
   const robotSelected = robots[selectedRobotIndex] || {
-    stepCount: 0, prevDistance: 0, lastReward: 0, cumulativeReward: 0, prevOmega: 0.0, jitterSum: 0.0, rewardHistory: [], liveRewardDetails: {
+    stepCount: 0, prevDistance: 0, lastReward: 0, cumulativeReward: 0, rewardHistory: [], jerkHistory: [], jerk: 0, liveRewardDetails: {
       dPrev: 0, dCurr: 0, thetaError: 0, rTheta: 0, rD: 0, baseReward: 0, bonus: 0, totalReward: 0
     }
   };
   const robotSelectedB = robotsB[selectedRobotIndex] || {
-    stepCount: 0, prevDistance: 0, lastReward: 0, cumulativeReward: 0, prevOmega: 0.0, jitterSum: 0.0, rewardHistory: [], liveRewardDetails: {
+    stepCount: 0, prevDistance: 0, lastReward: 0, cumulativeReward: 0, rewardHistory: [], jerkHistory: [], jerk: 0, liveRewardDetails: {
       dPrev: 0, dCurr: 0, thetaError: 0, rTheta: 0, rD: 0, baseReward: 0, bonus: 0, totalReward: 0
     }
   };
-
-  // Trajectory Jitter / Smoothness Scores
-  const d3qnJitterScore = robotSelected.stepCount > 0 ? (robotSelected.jitterSum / robotSelected.stepCount) : 0;
-  const dqnJitterScore = robotSelectedB.stepCount > 0 ? (robotSelectedB.jitterSum / robotSelectedB.stepCount) : 0;
 
   const dualRewardChartData = {
     labels: robotSelected.rewardHistory.map((_, i) => i + 1),
@@ -1113,6 +1259,32 @@ export default function App() {
       {
         label: "Baseline (Additive)",
         data: robotSelectedB.rewardHistory,
+        borderColor: COLORS.robotB,
+        backgroundColor: "rgba(255, 0, 127, 0.08)",
+        pointRadius: 0,
+        borderWidth: 2,
+        fill: true,
+        tension: 0.2,
+      }
+    ],
+  };
+
+  const smoothnessChartData = {
+    labels: robotSelected.jerkHistory.map((_, i) => i + 1),
+    datasets: [
+      {
+        label: "D3QN (Smoothness)",
+        data: robotSelected.jerkHistory,
+        borderColor: COLORS.robot,
+        backgroundColor: "rgba(0, 242, 254, 0.08)",
+        pointRadius: 0,
+        borderWidth: 2,
+        fill: true,
+        tension: 0.2,
+      },
+      {
+        label: "Baseline (Smoothness)",
+        data: robotSelectedB.jerkHistory,
         borderColor: COLORS.robotB,
         backgroundColor: "rgba(255, 0, 127, 0.08)",
         pointRadius: 0,
@@ -1197,7 +1369,7 @@ export default function App() {
               Reinforcement Learning Sandbox
             </h1>
             <p className="text-xs mt-1 text-left text-gray-400">
-              Interactive multi-robot simulation console evaluating lookahead vs. standard DQN models
+              Interactive multi-robot simulation canvas evaluating lookahead vs. standard DQN models
             </p>
           </div>
           
@@ -1246,6 +1418,7 @@ export default function App() {
                   {isRunning ? "⏸ Pause" : "▶ Run Auto"}
                 </button>
 
+                {/* Step forward / backward navigation buttons */}
                 <button
                   onClick={handlePrevStep}
                   disabled={historyStack.length === 0}
@@ -1270,7 +1443,7 @@ export default function App() {
                     color: COLORS.textPrimary,
                   }}
                 >
-                  🔄 Reset Robots
+                  🔄 Reset Positions
                 </button>
                 <button
                   onClick={handleRandomizeObstacles}
@@ -1371,7 +1544,7 @@ export default function App() {
 
                 <div className="flex justify-between items-center text-xs font-mono px-1">
                   <span className="text-gray-400">Advanced Telemetry:</span>
-                  <span className="text-gray-500">Drag green target to change goal position</span>
+                  <span className="text-gray-500">Click & Drag robots to change start positions</span>
                 </div>
               </div>
 
@@ -1403,7 +1576,7 @@ export default function App() {
 
                 <div className="flex justify-between items-center text-xs font-mono px-1">
                   <span className="text-gray-400">Baseline Telemetry:</span>
-                  <span className="text-gray-500">Drag robots to set initial coordinates</span>
+                  <span className="text-gray-500">Robot coordinates are shared across columns</span>
                 </div>
               </div>
 
@@ -1449,6 +1622,7 @@ export default function App() {
                 </div>
 
                 <div className="pt-2 border-t border-gray-850 space-y-2 text-xs font-mono">
+                  {/* Select number of robots dropdown */}
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Number of Robots:</span>
                     <select
@@ -1463,6 +1637,7 @@ export default function App() {
                     </select>
                   </div>
 
+                  {/* Active robot focus select dropdown */}
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Inspect Telemetry:</span>
                     <select
@@ -1488,10 +1663,10 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Dynamic Sliders and Toggles */}
+              {/* Dynamic Reward Sliders & Noise Simulation */}
               <div className="md:col-span-2 p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
                 <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold border-b border-gray-800 pb-2">
-                  2. Parameter Sliders & Toggles
+                  2. Reward Function & Actuator Noise Parameters
                 </h3>
                 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 font-mono text-xs">
@@ -1510,6 +1685,9 @@ export default function App() {
                       onChange={(e) => { setGoalReward(Number(e.target.value)); handleReset(); }}
                       className="w-full accent-emerald-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
                     />
+                    <p className="text-[10px] text-gray-500">
+                      Rewards prioritize fast navigation routes.
+                    </p>
                   </div>
 
                   {/* Slider 2: Collision Penalty */}
@@ -1527,58 +1705,51 @@ export default function App() {
                       onChange={(e) => { setCollisionPenalty(Number(e.target.value)); handleReset(); }}
                       className="w-full accent-red-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
                     />
+                    <p className="text-[10px] text-gray-500">
+                      Penalties trigger cautious paths around blocks.
+                    </p>
                   </div>
+                </div>
 
-                  {/* Toggle 1: Actuator Noise */}
-                  <div className="p-3 bg-[#0b0f12] rounded border border-gray-850 space-y-3">
+                {/* Option 2: Environmental Actuator Noise (Toggle & Slider) */}
+                <div className="pt-4 border-t border-gray-850 grid grid-cols-1 sm:grid-cols-2 gap-6 font-mono text-xs">
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-gray-300 font-bold">Actuator Noise:</span>
+                      <span className="text-gray-400">Enable Actuator Noise:</span>
                       <input
                         type="checkbox"
                         checked={enableNoise}
-                        onChange={(e) => setEnableNoise(e.target.checked)}
-                        className="w-4 h-4 cursor-pointer accent-amber-500 rounded"
+                        onChange={(e) => { setEnableNoise(e.target.checked); handleReset(); }}
+                        className="w-4 h-4 cursor-pointer accent-cyan-500 rounded"
                       />
                     </div>
-                    {enableNoise && (
-                      <div className="space-y-1.5">
-                        <div className="flex justify-between text-[11px]">
-                          <span className="text-gray-500">Noise Magnitude:</span>
-                          <span className="text-amber-400 font-bold">{noiseLevel}</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0.1"
-                          max="1.0"
-                          step="0.1"
-                          value={noiseLevel}
-                          onChange={(e) => setNoiseLevel(Number(e.target.value))}
-                          className="w-full accent-amber-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                        />
-                      </div>
-                    )}
+                    <p className="text-[10px] text-gray-500">
+                      Simulates motion/friction disturbances (noise perturbation on actions).
+                    </p>
                   </div>
 
-                  {/* Toggle 2: Smoothness Tracker */}
-                  <div className="p-3 bg-[#0b0f12] rounded border border-gray-850 flex items-center justify-between">
-                    <div className="space-y-1">
-                      <span className="text-gray-300 font-bold block">Jitter Analytics:</span>
-                      <span className="text-[10px] text-gray-500 block leading-tight">Tracks angular velocity jerky changes</span>
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Actuator Noise Level (σ):</span>
+                      <span className="text-cyan-400 font-bold">{noiseLevel.toFixed(2)}</span>
                     </div>
                     <input
-                      type="checkbox"
-                      checked={enableSmoothness}
-                      onChange={(e) => setEnableSmoothness(e.target.checked)}
-                      className="w-4 h-4 cursor-pointer accent-cyan-500 rounded"
+                      type="range"
+                      min="0.02"
+                      max="0.40"
+                      step="0.02"
+                      value={noiseLevel}
+                      disabled={!enableNoise}
+                      onChange={(e) => { setNoiseLevel(Number(e.target.value)); handleReset(); }}
+                      className="w-full accent-cyan-500 cursor-pointer bg-gray-800 h-1 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed"
                     />
                   </div>
-
                 </div>
               </div>
 
             </div>
 
-            {/* Live Telemetry & Reward Formula */}
+            {/* Live Telemetry & Reward Formula (displays metrics for selected robot) */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
               {/* Telemetry Comparison Table */}
@@ -1615,15 +1786,6 @@ export default function App() {
                       <td className="py-2.5 text-right font-semibold text-cyan-400">{robotSelected.stepCount}</td>
                       <td className="py-2.5 text-right font-semibold text-pink-400">{robotSelectedB.stepCount}</td>
                     </tr>
-                    
-                    {enableSmoothness && (
-                      <tr>
-                        <td className="py-2.5 text-gray-400 font-semibold text-amber-500">Steering Jitter Index</td>
-                        <td className="py-2.5 text-right text-cyan-400 font-semibold">{d3qnJitterScore.toFixed(3)}</td>
-                        <td className="py-2.5 text-right text-pink-400 font-semibold">{dqnJitterScore.toFixed(3)}</td>
-                      </tr>
-                    )}
-
                     <tr>
                       <td className="py-2.5 text-gray-400">Displacement to Target</td>
                       <td className="py-2.5 text-right text-gray-300">{robotSelected.prevDistance?.toFixed(1)} units</td>
@@ -1642,11 +1804,16 @@ export default function App() {
                     <tr>
                       <td className="py-2.5 text-gray-400">Path Efficiency</td>
                       <td className="py-2.5 text-right text-emerald-400 font-semibold">
-                        {(robotSelected.stepCount > 0 ? (Math.hypot(goalPos.x - startPositions[selectedRobotIndex].x, goalPos.y - startPositions[selectedRobotIndex].y) / robotSelected.stepCount) : 0).toFixed(3)}
+                        {(robotSelected.stepCount > 0 ? (Math.hypot(goal.x - startPositions[selectedRobotIndex].x, goal.y - startPositions[selectedRobotIndex].y) / robotSelected.stepCount) : 0).toFixed(3)}
                       </td>
                       <td className="py-2.5 text-right text-orange-400 font-semibold">
-                        {(robotSelectedB.stepCount > 0 ? (Math.hypot(goalPos.x - startPositions[selectedRobotIndex].x, goalPos.y - startPositions[selectedRobotIndex].y) / robotSelectedB.stepCount) : 0).toFixed(3)}
+                        {(robotSelectedB.stepCount > 0 ? (Math.hypot(goal.x - startPositions[selectedRobotIndex].x, goal.y - startPositions[selectedRobotIndex].y) / robotSelectedB.stepCount) : 0).toFixed(3)}
                       </td>
+                    </tr>
+                    <tr>
+                      <td className="py-2.5 text-gray-400">Trajectory Jerk (Steer)</td>
+                      <td className="py-2.5 text-right text-cyan-400 font-bold">{robotSelected.jerk?.toFixed(2)} rad</td>
+                      <td className="py-2.5 text-right text-pink-400 font-bold">{robotSelectedB.jerk?.toFixed(2)} rad</td>
                     </tr>
                   </tbody>
                 </table>
@@ -1698,7 +1865,7 @@ export default function App() {
 
             </div>
 
-            {/* Dueling DQN Decomposition stream */}
+            {/* Dueling DQN Decomposition chart */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               
               {/* Dueling DQN Breakdown Visualizer */}
@@ -1762,73 +1929,115 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Step Reward Chart */}
+              {/* Option 3: Step Reward / Jerk Chart (with Toggle Switch) */}
               <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] flex flex-col justify-between">
                 <div>
-                  <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold border-b border-gray-800 pb-2">
-                    Live Steps Reward (Robot {selectedRobotIndex + 1})
-                  </h3>
+                  <div className="border-b border-gray-800 pb-2 flex justify-between items-center">
+                    <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold">
+                      {showSmoothnessGraph ? `Steering Smoothness (Robot ${selectedRobotIndex + 1})` : `Live Steps Reward (Robot ${selectedRobotIndex + 1})`}
+                    </h3>
+                    <div className="flex items-center gap-1.5 text-[10px] font-mono">
+                      <span className="text-gray-500">Plot Jerk:</span>
+                      <input
+                        type="checkbox"
+                        checked={showSmoothnessGraph}
+                        onChange={(e) => setShowSmoothnessGraph(e.target.checked)}
+                        className="w-3.5 h-3.5 cursor-pointer accent-cyan-500 rounded"
+                      />
+                    </div>
+                  </div>
                 </div>
                 <div className="h-[180px] my-4">
-                  {robotSelected.rewardHistory.length > 0 ? (
-                    <Line data={dualRewardChartData} options={chartOptions} />
+                  {showSmoothnessGraph ? (
+                    robotSelected.jerkHistory.length > 0 ? (
+                      <Line data={smoothnessChartData} options={chartOptions} />
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-xs text-gray-500">
+                        Steering smoothness curves will populate as robot steps.
+                      </div>
+                    )
                   ) : (
-                    <div className="h-full flex items-center justify-center text-xs text-gray-500">
-                      Step reward curves will populate as robot steps.
-                    </div>
+                    robotSelected.rewardHistory.length > 0 ? (
+                      <Line data={dualRewardChartData} options={chartOptions} />
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-xs text-gray-500">
+                        Step reward curves will populate as robot steps.
+                      </div>
+                    )
                   )}
                 </div>
                 <div className="text-[10px] text-gray-500 font-mono text-center">
-                  Cyan: D3QN (Multiplicative) | Pink: Baseline (Additive)
+                  Cyan: D3QN | Pink: Baseline DQN
                 </div>
               </div>
 
             </div>
 
-            {/* Session Logs History Table */}
+            {/* Option 4: Session History Log Table */}
             <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
-              <h3 className="text-xs uppercase tracking-wider text-cyan-400 font-bold border-b border-gray-800 pb-2">
-                Session Simulation Runs Log History
-              </h3>
-              {sessionLog.length > 0 ? (
+              <div className="flex justify-between items-center border-b border-gray-800 pb-2">
+                <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold">
+                  4. Session Run History Logs
+                </h3>
+                <button
+                  onClick={() => setSessionLogs([])}
+                  disabled={sessionLogs.length === 0}
+                  className="px-2 py-1 text-[10px] text-red-400 border border-red-955 hover:bg-red-950/20 rounded font-mono disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  Clear Logs
+                </button>
+              </div>
+
+              {sessionLogs.length === 0 ? (
+                <p className="text-xs text-gray-500 font-mono py-2">
+                  No completed simulation runs recorded in this session yet. Complete an automated or manual run to log it here.
+                </p>
+              ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-xs font-mono text-left">
+                  <table className="w-full text-left text-xs font-mono border-collapse">
                     <thead>
-                      <tr className="text-gray-500 border-b border-gray-850">
-                        <th className="py-2">Run ID</th>
-                        <th className="py-2">Policy</th>
+                      <tr className="text-gray-500 border-b border-gray-850 pb-2 text-[10px]">
+                        <th className="py-2">Time</th>
                         <th className="py-2">Layout</th>
-                        <th className="py-2 text-center">Robots</th>
-                        <th className="py-2 text-right text-cyan-400">D3QN Success</th>
-                        <th className="py-2 text-right text-pink-400">DQN Success</th>
-                        <th className="py-2 text-right text-cyan-400">D3QN Steps</th>
-                        <th className="py-2 text-right text-pink-400">DQN Steps</th>
-                        <th className="py-2 text-right text-cyan-400">D3QN Jitter</th>
-                        <th className="py-2 text-right text-pink-400">DQN Jitter</th>
+                        <th className="py-2 text-cyan-400">Advanced D3QN Stats (Robot 1)</th>
+                        <th className="py-2 text-pink-400">Baseline DQN Stats (Robot 1)</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-850">
-                      {sessionLog.map((log) => (
-                        <tr key={log.runId}>
-                          <td className="py-2 text-gray-400 font-bold">#{log.runId}</td>
-                          <td className="py-2 text-gray-300">{log.policyMode}</td>
-                          <td className="py-2 text-gray-300">{log.presetName}</td>
-                          <td className="py-2 text-center text-gray-300">{log.numRobots}</td>
-                          <td className="py-2 text-right text-cyan-400 font-semibold">{log.d3qnSuccess.toFixed(0)}%</td>
-                          <td className="py-2 text-right text-pink-400 font-semibold">{log.dqnSuccess.toFixed(0)}%</td>
-                          <td className="py-2 text-right text-cyan-300">{log.d3qnSteps.toFixed(1)}</td>
-                          <td className="py-2 text-right text-pink-300">{log.dqnSteps.toFixed(1)}</td>
-                          <td className="py-2 text-right text-cyan-400">{log.d3qnJitter.toFixed(3)}</td>
-                          <td className="py-2 text-right text-pink-400">{log.dqnJitter.toFixed(3)}</td>
-                        </tr>
-                      ))}
+                      {sessionLogs.map(log => {
+                        const adv = log.advStats[0] || { status: 'idle', steps: 0, reward: 0, jerk: 0 };
+                        const base = log.baseStats[0] || { status: 'idle', steps: 0, reward: 0, jerk: 0 };
+
+                        return (
+                          <tr key={log.id} className="hover:bg-[#161d22]/40 transition-colors">
+                            <td className="py-3 text-gray-400">{log.timestamp}</td>
+                            <td className="py-3 capitalize text-gray-300">{log.layout}</td>
+                            <td className="py-3">
+                              <div className="space-x-2">
+                                <span className="font-bold" style={{ color: statusDisplay(adv.status).color }}>
+                                  {statusDisplay(adv.status).label}
+                                </span>
+                                <span className="text-gray-400">Steps: <strong className="text-gray-200">{adv.steps}</strong></span>
+                                <span className="text-gray-400">Ret: <strong className="text-cyan-400">{adv.reward.toFixed(1)}</strong></span>
+                                <span className="text-gray-400">Jerk: <strong className="text-emerald-400">{adv.jerk.toFixed(1)}</strong></span>
+                              </div>
+                            </td>
+                            <td className="py-3">
+                              <div className="space-x-2">
+                                <span className="font-bold" style={{ color: statusDisplay(base.status).color }}>
+                                  {statusDisplay(base.status).label}
+                                </span>
+                                <span className="text-gray-400">Steps: <strong className="text-gray-200">{base.steps}</strong></span>
+                                <span className="text-gray-400">Ret: <strong className="text-pink-400">{base.reward.toFixed(1)}</strong></span>
+                                <span className="text-gray-400">Jerk: <strong className="text-orange-400">{base.jerk.toFixed(1)}</strong></span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
-              ) : (
-                <p className="text-xs text-gray-500 text-left">
-                  Finished simulation runs will automatically log stats here.
-                </p>
               )}
             </div>
 

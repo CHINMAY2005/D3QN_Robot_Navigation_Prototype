@@ -991,6 +991,85 @@ export default function App() {
   };
 
   // ------------------------------------------------------------------------
+  // Training Simulator Logic (animated live-plotting)
+  // ------------------------------------------------------------------------
+  const handleToggleTraining = () => {
+    if (isTraining) {
+      setIsTraining(false);
+      if (trainingIntervalRef.current) {
+        clearInterval(trainingIntervalRef.current);
+        trainingIntervalRef.current = null;
+      }
+    } else {
+      setIsTraining(true);
+      setTrainingEpisode(0);
+      setTrainingData({
+        episodes: [],
+        d3qnRewards: [],
+        dqnRewards: [],
+        d3qnSuccess: [],
+        dqnSuccess: [],
+        d3qnSteps: [],
+        dqnSteps: [],
+        d3qnQVals: [],
+        dqnQVals: [],
+        actualReturn: []
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (isTraining) {
+      trainingIntervalRef.current = setInterval(() => {
+        setTrainingEpisode(prev => {
+          const nextEp = prev + 1;
+          if (nextEp > 100) {
+            setIsTraining(false);
+            clearInterval(trainingIntervalRef.current);
+            return prev;
+          }
+
+          // D3QN metrics (dueling + double DQN + multiplicative reward)
+          const d3qnRew = 820 * (1 - Math.exp(-nextEp / 18)) - 100 * Math.exp(-nextEp / 5) + (Math.random() * 45 - 22.5);
+          const d3qnSucc = 100 / (1 + 9 * Math.exp(-nextEp / 14));
+          const d3qnStep = Math.max(26, 120 * Math.exp(-nextEp / 15) + (Math.random() * 8 - 4));
+          const actualR = 520 * (1 - Math.exp(-nextEp / 20)) + (Math.random() * 30 - 15);
+          const d3qnQ = actualR + (Math.random() * 20 - 10);
+
+          // Baseline DQN metrics (no dueling, no double DQN, additive reward)
+          const dqnRew = 380 * (1 - Math.exp(-nextEp / 35)) - 150 * Math.exp(-nextEp / 8) + (Math.random() * 70 - 35);
+          const dqnSucc = 72 / (1 + 12 * Math.exp(-nextEp / 25));
+          const dqnStep = Math.max(54, 150 * Math.exp(-nextEp / 25) + (Math.random() * 18 - 9));
+          const dqnQ = actualR * 1.6 + 120 * Math.exp(-Math.pow(nextEp - 30, 2) / 600) + 180 * (1 - Math.exp(-nextEp / 50)) + (Math.random() * 40 - 20);
+
+          setTrainingData(data => ({
+            episodes: [...data.episodes, nextEp],
+            d3qnRewards: [...data.d3qnRewards, d3qnRew],
+            dqnRewards: [...data.dqnRewards, dqnRew],
+            d3qnSuccess: [...data.d3qnSuccess, d3qnSucc],
+            dqnSuccess: [...data.dqnSuccess, dqnSucc],
+            d3qnSteps: [...data.d3qnSteps, d3qnStep],
+            dqnSteps: [...data.dqnSteps, dqnStep],
+            d3qnQVals: [...data.d3qnQVals, d3qnQ],
+            dqnQVals: [...data.dqnQVals, dqnQ],
+            actualReturn: [...data.actualReturn, actualR]
+          }));
+
+          return nextEp;
+        });
+      }, 120);
+    } else {
+      if (trainingIntervalRef.current) {
+        clearInterval(trainingIntervalRef.current);
+        trainingIntervalRef.current = null;
+      }
+    }
+    return () => {
+      if (trainingIntervalRef.current) clearInterval(trainingIntervalRef.current);
+    };
+  }, [isTraining]);
+
+  // ------------------------------------------------------------------------
   // Derived data values for selected robot
   // ------------------------------------------------------------------------
   const robotSelected = robots[selectedRobotIndex] || {

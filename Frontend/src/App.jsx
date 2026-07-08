@@ -293,6 +293,10 @@ function selectBaselineAction(x, y, theta, obstaclesList) {
   return { action: chosenAction, headingError };
 }
 
+function distanceTo(x, y, target) {
+  return Math.hypot(target.x - x, target.y - y);
+}
+
 // --------------------------------------------------------------------------
 // Main Component
 // --------------------------------------------------------------------------

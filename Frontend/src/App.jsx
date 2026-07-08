@@ -1073,6 +1073,16 @@ export default function App() {
     }
   };
 
+  const statusDisplay = (stat) => {
+    const mapping = {
+      idle: { label: "STANDBY", color: COLORS.textDim },
+      navigating: { label: "NAVIGATING", color: COLORS.amber },
+      goal_reached: { label: "GOAL REACHED", color: COLORS.goal },
+      collision: { label: "COLLISION", color: COLORS.danger },
+    };
+    return mapping[stat] || { label: "STANDBY", color: COLORS.textDim };
+  };
+
   return (
     <div
       className="min-h-screen w-full flex flex-col items-center p-6 font-sans text-left"

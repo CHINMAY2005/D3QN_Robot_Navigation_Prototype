@@ -96,6 +96,9 @@ class StepRequest(BaseModel):
     )
     action: int = Field(..., ge=0, le=4, description="Discrete action index [0-4]")
     obstacles: list[Obstacle] = Field(default_factory=list, description="List of rectangular obstacles")
+    reward_type: Literal["multiplicative", "additive"] = Field(
+        default="multiplicative", description="Type of reward formulation to use"
+    )
 
 
 class StepResponse(BaseModel):
@@ -160,9 +163,12 @@ def compute_reward(
     current_distance: float,
     prev_distance: float,
     theta_error: float,
+    reward_type: str = "multiplicative",
 ) -> tuple[float, float, float]:
     """
-    Composite multiplicative reward: R = R_d * R_theta
+    Composite reward:
+    - Multiplicative: R = R_d * R_theta
+    - Additive: R = R_d + R_theta - 2.0
 
     R_theta = 5.0 - cos(theta_error)   -> range [4.0, 6.0], peaks (min) when
                                           heading aligns with the goal bearing.
@@ -172,7 +178,10 @@ def compute_reward(
     """
     r_theta = 5.0 - math.cos(theta_error)
     r_d = 2.0 * math.exp(-current_distance / prev_distance)
-    return r_d, r_theta, r_d * r_theta
+    if reward_type == "additive":
+        return r_d, r_theta, r_d + r_theta - 2.0
+    else:
+        return r_d, r_theta, r_d * r_theta
 
 
 # --------------------------------------------------------------------------
@@ -202,8 +211,8 @@ def step(request: StepRequest) -> StepResponse:
     current_distance = compute_distance(new_x, new_y, GOAL_X, GOAL_Y)
     theta_error = compute_theta_error(new_x, new_y, new_theta, GOAL_X, GOAL_Y)
 
-    # 4. Base multiplicative reward.
-    r_d, r_theta, reward = compute_reward(current_distance, request.prev_distance, theta_error)
+    # 4. Base reward.
+    r_d, r_theta, reward = compute_reward(current_distance, request.prev_distance, theta_error, request.reward_type)
 
     # Theoretical Efficiency Score calculation
     # Ratio of initial straight line distance to current steps taken

@@ -50,7 +50,68 @@ const COLORS = {
 };
 
 // --------------------------------------------------------------------------
-// Helpers & Steering Policies
+// Raycasting & Spatial Sensing (LiDAR)
+// --------------------------------------------------------------------------
+
+/**
+ * Calculates distances in 8 directions (45 deg increments relative to robot theta)
+ * to obstacles or canvas boundaries.
+ */
+function calculateLidarRanges(x, y, theta, obstaclesList) {
+  const numRays = 8;
+  const maxRange = 300; // max sensing range
+  const ranges = [];
+
+  for (let i = 0; i < numRays; i++) {
+    const phi = theta + (i * Math.PI) / 4;
+    const dx = Math.cos(phi);
+    const dy = Math.sin(phi);
+
+    // 1. Intersect with canvas boundaries
+    let tMin = Infinity;
+    if (dx > 0) tMin = Math.min(tMin, (CANVAS_WIDTH - x) / dx);
+    else if (dx < 0) tMin = Math.min(tMin, -x / dx);
+
+    if (dy > 0) tMin = Math.min(tMin, (CANVAS_HEIGHT - y) / dy);
+    else if (dy < 0) tMin = Math.min(tMin, -y / dy);
+
+    // 2. Intersect with each rectangular obstacle (Ray-Box intersection)
+    obstaclesList.forEach(obs => {
+      const x1 = obs.x;
+      const x2 = obs.x + obs.width;
+      const y1 = obs.y;
+      const y2 = obs.y + obs.height;
+
+      let tX1 = dx !== 0 ? (x1 - x) / dx : -Infinity;
+      let tX2 = dx !== 0 ? (x2 - x) / dx : Infinity;
+      let tXMin = Math.min(tX1, tX2);
+      let tXMax = Math.max(tX1, tX2);
+
+      let tY1 = dy !== 0 ? (y1 - y) / dy : -Infinity;
+      let tY2 = dy !== 0 ? (y2 - y) / dy : Infinity;
+      let tYMin = Math.min(tY1, tY2);
+      let tYMax = Math.max(tY1, tY2);
+
+      let tEnter = Math.max(tXMin, tYMin);
+      let tExit = Math.min(tXMax, tYMax);
+
+      if (tExit >= tEnter && tExit >= 0) {
+        const tVal = tEnter >= 0 ? tEnter : 0; // 0 if ray starts inside the box
+        if (tVal < tMin) {
+          tMin = tVal;
+        }
+      }
+    });
+
+    // Clamp range to maxRange
+    ranges.push(Math.min(tMin, maxRange));
+  }
+
+  return ranges;
+}
+
+// --------------------------------------------------------------------------
+// Steering Policies
 // --------------------------------------------------------------------------
 
 /** Normalize an angle to the range [-pi, pi]. */
@@ -64,14 +125,13 @@ function bearingToGoal(x, y) {
 }
 
 /**
- * Greedy policy simulation: pick the discrete action whose resulting
- * angular velocity best reduces the current heading error toward the goal.
+ * Greedy policy: selects discrete action that minimizes current heading error
  */
 function selectGreedyAction(x, y, theta) {
   const desiredTheta = bearingToGoal(x, y);
   const headingError = normalizeAngle(desiredTheta - theta);
 
-  let bestAction = 2; // default: go straight (0.0 rad/s)
+  let bestAction = 2; // default: go straight
   let bestScore = Infinity;
 
   ANGULAR_VELOCITIES.forEach((omega, index) => {
@@ -87,25 +147,20 @@ function selectGreedyAction(x, y, theta) {
 }
 
 /**
- * Tree-search lookahead (MPC) policy: simulates future paths to avoid collisions
- * with obstacles while steering towards the goal.
+ * Tree-search lookahead (MPC) policy: searches depth 8 to avoid obstacle collisions
  */
 function selectLookaheadAction(x, y, theta, obstaclesList) {
   const V = 15.0;
-  const ACTIONS_SUBSEQUENT = [0, 2, 4]; // left, straight, right
+  const ACTIONS_SUBSEQUENT = [0, 2, 4];
 
   function checkCollision(px, py) {
     for (const rect of obstaclesList) {
       const closestX = Math.max(rect.x, Math.min(px, rect.x + rect.width));
       const closestY = Math.max(rect.y, Math.min(py, rect.y + rect.height));
       const dist = Math.hypot(px - closestX, py - closestY);
-      if (dist < ROBOT_RADIUS) {
-        return true;
-      }
+      if (dist < ROBOT_RADIUS) return true;
     }
-    if (px <= 0 || px >= CANVAS_WIDTH || py <= 0 || py >= CANVAS_HEIGHT) {
-      return true;
-    }
+    if (px <= 0 || px >= CANVAS_WIDTH || py <= 0 || py >= CANVAS_HEIGHT) return true;
     return false;
   }
 
@@ -118,10 +173,7 @@ function selectLookaheadAction(x, y, theta, obstaclesList) {
   }
 
   function findBestPath(px, py, ptheta, depth, maxDepth) {
-    if (checkCollision(px, py)) {
-      return { score: -1000 + depth, path: [] };
-    }
-    
+    if (checkCollision(px, py)) return { score: -1000 + depth, path: [] };
     if (depth === maxDepth) {
       const dist = Math.hypot(GOAL.x - px, GOAL.y - py);
       return { score: 1000 - dist, path: [] };
@@ -129,7 +181,6 @@ function selectLookaheadAction(x, y, theta, obstaclesList) {
     
     let bestScore = -Infinity;
     let bestPath = [];
-    
     const actionsToTry = (depth === 0) ? [0, 1, 2, 3, 4] : ACTIONS_SUBSEQUENT;
     
     for (const action of actionsToTry) {
@@ -139,7 +190,7 @@ function selectLookaheadAction(x, y, theta, obstaclesList) {
       let score = result.score;
       if (score > -1000) {
         const omega = ANGULAR_VELOCITIES[action];
-        score -= Math.abs(omega) * 0.1; // small turning penalty
+        score -= Math.abs(omega) * 0.1; // turning penalty
       }
       
       if (score > bestScore) {
@@ -147,7 +198,6 @@ function selectLookaheadAction(x, y, theta, obstaclesList) {
         bestPath = [action, ...result.path];
       }
     }
-    
     return { score: bestScore, path: bestPath };
   }
 
@@ -159,7 +209,7 @@ function selectLookaheadAction(x, y, theta, obstaclesList) {
 }
 
 /**
- * A* Pathfinding implementation
+ * A* Pathfinding + Local pure pursuit
  */
 function astarPath(startX, startY, goalX, goalY, obstaclesList) {
   const GRID_SIZE = 15;
@@ -233,7 +283,7 @@ function astarPath(startX, startY, goalX, goalY, obstaclesList) {
       }
     }
   }
-  return []; // No path found
+  return [];
 }
 
 function selectAStarAction(x, y, theta, globalPath) {
@@ -268,12 +318,10 @@ function selectAStarAction(x, y, theta, globalPath) {
 }
 
 /**
- * Baseline DQN steering policy: simulates a poorly generalized, shortsighted agent.
- * Lacks steering smoothness penalty, has a shallow search horizon (depth 2), and contains
- * exploration/Q-overestimation noise.
+ * Baseline DQN steering policy: shortsighted (depth 2 search) and contains
+ * overestimation noise, representing standard DQN learning limitations.
  */
 function selectBaselineAction(x, y, theta, obstaclesList) {
-  // 12% probability of making sub-optimal choices simulating overestimation bias loops
   if (Math.random() < 0.12) {
     const randomAction = Math.floor(Math.random() * 5);
     const desiredTheta = bearingToGoal(x, y);
@@ -319,8 +367,6 @@ function selectBaselineAction(x, y, theta, obstaclesList) {
       const result = findBestPath(nextState.x, nextState.y, nextState.theta, depth + 1, maxDepth);
       
       let score = result.score;
-      // Note: Lacks turning / smoothness penalty entirely!
-      
       if (score > bestScore) {
         bestScore = score;
         bestPath = [action, ...result.path];
@@ -329,7 +375,7 @@ function selectBaselineAction(x, y, theta, obstaclesList) {
     return { score: bestScore, path: bestPath };
   }
   
-  const result = findBestPath(x, y, theta, 0, 2); // Shortsighted Depth 2 Lookahead
+  const result = findBestPath(x, y, theta, 0, 2);
   const chosenAction = result.path[0] !== undefined ? result.path[0] : 2;
   const desiredTheta = bearingToGoal(x, y);
   const headingError = normalizeAngle(desiredTheta - theta);
@@ -341,17 +387,16 @@ function distanceTo(x, y, target) {
 }
 
 // --------------------------------------------------------------------------
-// Main Component
+// App Component
 // --------------------------------------------------------------------------
 
 export default function App() {
-  // Navigation View Tabs: "comparison" | "training"
   const [activeTab, setActiveTab] = useState("comparison");
 
   // --- STATE FOR AGENT 1 (Advanced D3QN Agent) ---
   const [robot, setRobot] = useState({ ...START });
   const [prevDistance, setPrevDistance] = useState(distanceTo(START.x, START.y, GOAL));
-  const [status, setStatus] = useState("idle"); // idle | navigating | goal_reached | collision
+  const [status, setStatus] = useState("idle");
   const [stepCount, setStepCount] = useState(0);
   const [lastReward, setLastReward] = useState(0);
   const [cumulativeReward, setCumulativeReward] = useState(0);
@@ -364,7 +409,7 @@ export default function App() {
   // --- STATE FOR AGENT 2 (Baseline DQN Agent) ---
   const [robotB, setRobotB] = useState({ ...START });
   const [prevDistanceB, setPrevDistanceB] = useState(distanceTo(START.x, START.y, GOAL));
-  const [statusB, setStatusB] = useState("idle"); // idle | navigating | goal_reached | collision
+  const [statusB, setStatusB] = useState("idle");
   const [stepCountB, setStepCountB] = useState(0);
   const [lastRewardB, setLastRewardB] = useState(0);
   const [cumulativeRewardB, setCumulativeRewardB] = useState(0);
@@ -374,11 +419,17 @@ export default function App() {
     dPrev: 0, dCurr: 0, thetaError: 0, rTheta: 0, rD: 0, baseReward: 0, bonus: 0, totalReward: 0
   });
 
-  // Shared simulation state
+  // Dynamic Hyperparameter Sliders
+  const [goalReward, setGoalReward] = useState(500);
+  const [collisionPenalty, setCollisionPenalty] = useState(-100);
+  const [showLidar, setShowLidar] = useState(true);
+
+  // Shared environment settings
   const [isRunning, setIsRunning] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
-  const [policyMode, setPolicyMode] = useState("lookahead"); // lookahead | greedy | astar
+  const [policyMode, setPolicyMode] = useState("lookahead");
   const [globalPath, setGlobalPath] = useState([]);
+  const [presetName, setPresetName] = useState("columns");
   
   // Shared obstacles
   const [obstacles, setObstacles] = useState([
@@ -389,11 +440,9 @@ export default function App() {
   const [drawingStart, setDrawingStart] = useState(null);
   const [drawingCurrent, setDrawingCurrent] = useState(null);
 
-  // Live Dueling DQN values for visualization
+  // Dueling DQN values for visualization
   const [duelingDecomp, setDuelingDecomp] = useState({
-    V: 0,
-    advantages: [0, 0, 0, 0, 0],
-    qValues: [0, 0, 0, 0, 0]
+    V: 0, advantages: [0, 0, 0, 0, 0], qValues: [0, 0, 0, 0, 0]
   });
 
   // --- TRAINING SIMULATION STATE ---
@@ -412,13 +461,12 @@ export default function App() {
     actualReturn: []
   });
 
-  // Canvas Refs
+  // Refs for callbacks
   const canvasRef = useRef(null);
   const canvasRefB = useRef(null);
   const intervalRef = useRef(null);
   const trainingIntervalRef = useRef(null);
 
-  // Refs for inside callbacks
   const robotRef = useRef(robot);
   const prevDistanceRef = useRef(prevDistance);
   const statusRef = useRef(status);
@@ -432,6 +480,9 @@ export default function App() {
   const obstaclesRef = useRef(obstacles);
   const policyModeRef = useRef(policyMode);
   const globalPathRef = useRef(globalPath);
+
+  const goalRewardRef = useRef(goalReward);
+  const collisionPenaltyRef = useRef(collisionPenalty);
 
   useEffect(() => { robotRef.current = robot; }, [robot]);
   useEffect(() => { prevDistanceRef.current = prevDistance; }, [prevDistance]);
@@ -447,6 +498,9 @@ export default function App() {
   useEffect(() => { policyModeRef.current = policyMode; }, [policyMode]);
   useEffect(() => { globalPathRef.current = globalPath; }, [globalPath]);
 
+  useEffect(() => { goalRewardRef.current = goalReward; }, [goalReward]);
+  useEffect(() => { collisionPenaltyRef.current = collisionPenalty; }, [collisionPenalty]);
+
   // Recalculate A* path
   useEffect(() => {
     if (policyMode === "astar") {
@@ -455,8 +509,36 @@ export default function App() {
     }
   }, [obstacles, policyMode]);
 
+  // Apply layout presets
+  const handleApplyPreset = (name) => {
+    setPresetName(name);
+    let newObs = [];
+    if (name === "columns") {
+      newObs = [
+        { x: 200, y: 40, width: 30, height: 180 },
+        { x: 360, y: 180, width: 30, height: 180 }
+      ];
+    } else if (name === "corridors") {
+      newObs = [
+        { x: 160, y: 0, width: 35, height: 260 },
+        { x: 290, y: 140, width: 35, height: 260 },
+        { x: 420, y: 0, width: 35, height: 260 }
+      ];
+    } else if (name === "trap") {
+      newObs = [
+        { x: 220, y: 100, width: 30, height: 200 }, // U-trap vertical wall facing start
+        { x: 250, y: 100, width: 140, height: 30 }, // top ceiling
+        { x: 250, y: 270, width: 140, height: 30 }  // bottom floor
+      ];
+    } else if (name === "clear") {
+      newObs = [];
+    }
+    setObstacles(newObs);
+    handleReset();
+  };
+
   // ------------------------------------------------------------------------
-  // Dual Canvas rendering
+  // Dual Canvas Rendering
   // ------------------------------------------------------------------------
   const drawScene = useCallback((canvas, robotState, pathHistoryState, robotColor) => {
     if (!canvas) return;
@@ -466,7 +548,7 @@ export default function App() {
     ctx.fillStyle = COLORS.bg;
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    // Grid
+    // Grid lines
     ctx.strokeStyle = COLORS.grid;
     ctx.lineWidth = 1;
     for (let gx = 0; gx <= CANVAS_WIDTH; gx += 40) {
@@ -500,6 +582,33 @@ export default function App() {
     ctx.lineWidth = 4;
     ctx.stroke();
 
+    // Draw LiDAR range beams
+    if (showLidar) {
+      const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, obstacles);
+      ranges.forEach((dist, idx) => {
+        const phi = robotState.theta + (idx * Math.PI) / 4;
+        const beamX = robotState.x + dist * Math.cos(phi);
+        const beamY = robotState.y + dist * Math.sin(phi);
+
+        let beamColor = "rgba(79, 214, 122, 0.25)"; // green
+        if (dist < 40) beamColor = "rgba(240, 84, 107, 0.65)"; // red
+        else if (dist < 80) beamColor = "rgba(245, 166, 35, 0.45)"; // orange
+
+        ctx.beginPath();
+        ctx.moveTo(robotState.x, robotState.y);
+        ctx.lineTo(beamX, beamY);
+        ctx.strokeStyle = beamColor;
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+
+        // Beam hit endpoint
+        ctx.beginPath();
+        ctx.arc(beamX, beamY, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = beamColor;
+        ctx.fill();
+      });
+    }
+
     // Draw Path History
     if (pathHistoryState.length > 0) {
       ctx.beginPath();
@@ -512,7 +621,7 @@ export default function App() {
       ctx.stroke();
     }
 
-    // Draw A* Path if active for advanced agent
+    // Draw A* Path if active for D3QN agent
     if (robotColor === COLORS.robot && policyModeRef.current === "astar" && globalPathRef.current.length > 0) {
       ctx.beginPath();
       ctx.moveTo(globalPathRef.current[0].x, globalPathRef.current[0].y);
@@ -530,7 +639,7 @@ export default function App() {
     ctx.fillStyle = robotColor;
     ctx.fill();
 
-    // Draw Robot heading (nose vector)
+    // Draw Robot nose
     const noseX = robotState.x + NOSE_LENGTH * Math.cos(robotState.theta);
     const noseY = robotState.y + NOSE_LENGTH * Math.sin(robotState.theta);
     ctx.beginPath();
@@ -543,9 +652,9 @@ export default function App() {
     ctx.arc(noseX, noseY, 2.5, 0, Math.PI * 2);
     ctx.fillStyle = COLORS.robotNose;
     ctx.fill();
-  }, [obstacles]);
+  }, [obstacles, showLidar]);
 
-  // Redraw canvases on updates
+  // Redraw on state shifts
   useEffect(() => {
     if (activeTab === "comparison") {
       drawScene(canvasRef.current, robot, pathHistory, COLORS.robot);
@@ -553,7 +662,7 @@ export default function App() {
     }
   }, [robot, robotB, obstacles, pathHistory, pathHistoryB, drawScene, activeTab]);
 
-  // Drawing Custom Obstacles on Canvas (handles left or right click/drag synchronically)
+  // Click & drag drawing handles
   const getCanvasMousePos = (e, canvas) => {
     const rect = canvas.getBoundingClientRect();
     return {
@@ -588,13 +697,14 @@ export default function App() {
     
     if (newObs.width > 5 && newObs.height > 5) {
       setObstacles(prev => [...prev, newObs]);
+      setPresetName("custom");
     }
     setDrawingStart(null);
     setDrawingCurrent(null);
   };
 
   // ------------------------------------------------------------------------
-  // Live Value Breakdown Computation
+  // Live Value Breakdown Computation (Calculates V(s) and Advantage values)
   // ------------------------------------------------------------------------
   const updateDuelingBreakdown = useCallback((robotState) => {
     const { x, y, theta } = robotState;
@@ -602,11 +712,10 @@ export default function App() {
     const dMax = distanceTo(START.x, START.y, GOAL);
     const distFactor = Math.max(0, 1.0 - d / dMax);
     
-    // Proximity risk
     let collisionRisk = 0;
     obstacles.forEach(obs => {
-      const closestX = Math.max(obs.x, Math.min(x, obs.x + obs.width));
-      const closestY = Math.max(obs.y, Math.min(y, obs.y + obs.height));
+      const closestX = Math.max(obs.x, minVal => minVal, Math.min(x, obs.x + obs.width));
+      const closestY = Math.max(obs.y, minVal => minVal, Math.min(y, obs.y + obs.height));
       const dist = Math.hypot(x - closestX, y - closestY);
       if (dist < 40) {
         collisionRisk += (1.0 - (dist / 40));
@@ -614,8 +723,6 @@ export default function App() {
     });
 
     const stateValue = 480 * distFactor - 160 * Math.min(1.0, collisionRisk);
-    
-    // Advantages
     const bearing = bearingToGoal(x, y);
     const advs = ANGULAR_VELOCITIES.map(omega => {
       const projectedTheta = normalizeAngle(theta + omega);
@@ -641,7 +748,7 @@ export default function App() {
   }, [robot, status, updateDuelingBreakdown]);
 
   // ------------------------------------------------------------------------
-  // Simulation loop
+  // Step simulation loop
   // ------------------------------------------------------------------------
   const runStep = useCallback(async () => {
     const current = robotRef.current;
@@ -649,7 +756,6 @@ export default function App() {
     const currentB = robotBRef.current;
     const currentPrevDistanceB = prevDistanceBRef.current;
 
-    // Call steering policies
     const actionObj = policyModeRef.current === "lookahead"
       ? selectLookaheadAction(current.x, current.y, current.theta, obstaclesRef.current)
       : policyModeRef.current === "astar" 
@@ -658,7 +764,6 @@ export default function App() {
 
     const actionObjB = selectBaselineAction(currentB.x, currentB.y, currentB.theta, obstaclesRef.current);
 
-    // Call Backend step for Advanced Agent (Multiplicative reward)
     let advancedPromise = Promise.resolve(null);
     if (statusRef.current === "idle" || statusRef.current === "navigating") {
       advancedPromise = fetch(API_URL, {
@@ -673,12 +778,13 @@ export default function App() {
           step_count: stepCountRef.current,
           action: actionObj.action,
           obstacles: obstaclesRef.current,
-          reward_type: "multiplicative"
+          reward_type: "multiplicative",
+          goal_reward: goalRewardRef.current,
+          collision_reward: collisionPenaltyRef.current
         }),
       }).then(r => r.json());
     }
 
-    // Call Backend step for Baseline Agent (Additive reward)
     let baselinePromise = Promise.resolve(null);
     if (statusBRef.current === "idle" || statusBRef.current === "navigating") {
       baselinePromise = fetch(API_URL, {
@@ -693,7 +799,9 @@ export default function App() {
           step_count: stepCountBRef.current,
           action: actionObjB.action,
           obstacles: obstaclesRef.current,
-          reward_type: "additive"
+          reward_type: "additive",
+          goal_reward: goalRewardRef.current,
+          collision_reward: collisionPenaltyRef.current
         }),
       }).then(r => r.json());
     }
@@ -717,8 +825,8 @@ export default function App() {
         const rDVal = data.r_d;
         const baseRew = rDVal * rThetaVal;
         let bonusVal = 0;
-        if (data.status === "goal_reached") bonusVal = 500.0;
-        if (data.status === "collision") bonusVal = -100.0;
+        if (data.status === "goal_reached") bonusVal = goalRewardRef.current;
+        if (data.status === "collision") bonusVal = collisionPenaltyRef.current;
 
         setLiveRewardDetails({
           dPrev: currentPrevDistance,
@@ -746,10 +854,10 @@ export default function App() {
         const thetaErrB = normalizeAngle(desiredThetaB - dataB.theta);
         const rThetaValB = dataB.r_theta;
         const rDValB = dataB.r_d;
-        const baseRewB = rDValB + rThetaValB - 2.0; // additive formulation
+        const baseRewB = rDValB + rThetaValB - 2.0;
         let bonusValB = 0;
-        if (dataB.status === "goal_reached") bonusValB = 500.0;
-        if (dataB.status === "collision") bonusValB = -100.0;
+        if (dataB.status === "goal_reached") bonusValB = goalRewardRef.current;
+        if (dataB.status === "collision") bonusValB = collisionPenaltyRef.current;
 
         setLiveRewardDetailsB({
           dPrev: currentPrevDistanceB,
@@ -775,7 +883,6 @@ export default function App() {
     }
   }, []);
 
-  // Drive the interval loop while running.
   useEffect(() => {
     if (isRunning) {
       intervalRef.current = setInterval(runStep, STEP_INTERVAL_MS);
@@ -788,15 +895,13 @@ export default function App() {
     };
   }, [isRunning, runStep]);
 
-  // ------------------------------------------------------------------------
-  // Dual Controls
-  // ------------------------------------------------------------------------
+  // Controls
   const handleToggleRun = () => {
     setErrorMsg(null);
     if (!isRunning) {
       const advancedFin = status === "goal_reached" || status === "collision";
       const baselineFin = statusB === "goal_reached" || statusB === "collision";
-      if (advancedFin && baselineFin) return; // both finished, require reset
+      if (advancedFin && baselineFin) return;
 
       if (status === "idle") setStatus("navigating");
       if (statusB === "idle") setStatusB("navigating");
@@ -807,7 +912,6 @@ export default function App() {
   const handleReset = () => {
     setIsRunning(false);
     
-    // Reset Advanced
     setRobot({ ...START });
     setPrevDistance(distanceTo(START.x, START.y, GOAL));
     setStatus("idle");
@@ -820,7 +924,6 @@ export default function App() {
       dPrev: 0, dCurr: 0, thetaError: 0, rTheta: 0, rD: 0, baseReward: 0, bonus: 0, totalReward: 0
     });
 
-    // Reset Baseline
     setRobotB({ ...START });
     setPrevDistanceB(distanceTo(START.x, START.y, GOAL));
     setStatusB("idle");
@@ -834,38 +937,13 @@ export default function App() {
     });
 
     setDuelingDecomp({
-      V: 0,
-      advantages: [0, 0, 0, 0, 0],
-      qValues: [0, 0, 0, 0, 0]
+      V: 0, advantages: [0, 0, 0, 0, 0], qValues: [0, 0, 0, 0, 0]
     });
     setErrorMsg(null);
   };
 
-  const isNearStartOrGoal = (rect) => {
-    const pad = 45;
-    const startXRange = [START.x - pad, START.x + pad];
-    const startYRange = [START.y - pad, START.y + pad];
-    const goalXRange = [GOAL.x - pad, GOAL.x + pad];
-    const goalYRange = [GOAL.y - pad, GOAL.y + pad];
-
-    const intersectStart = !(
-      rect.x + rect.width < startXRange[0] ||
-      rect.x > startXRange[1] ||
-      rect.y + rect.height < startYRange[0] ||
-      rect.y > startYRange[1]
-    );
-
-    const intersectGoal = !(
-      rect.x + rect.width < goalXRange[0] ||
-      rect.x > goalXRange[1] ||
-      rect.y + rect.height < goalYRange[0] ||
-      rect.y > goalYRange[1]
-    );
-
-    return intersectStart || intersectGoal;
-  };
-
   const handleRandomizeObstacles = () => {
+    setPresetName("custom");
     const newObstacles = [];
     const count = 3 + Math.floor(Math.random() * 2);
     let attempts = 0;
@@ -897,7 +975,7 @@ export default function App() {
   };
 
   // ------------------------------------------------------------------------
-  // Training Simulator Logic (animated live-plotting)
+  // Training Simulator
   // ------------------------------------------------------------------------
   const handleToggleTraining = () => {
     if (isTraining) {
@@ -910,16 +988,7 @@ export default function App() {
       setIsTraining(true);
       setTrainingEpisode(0);
       setTrainingData({
-        episodes: [],
-        d3qnRewards: [],
-        dqnRewards: [],
-        d3qnSuccess: [],
-        dqnSuccess: [],
-        d3qnSteps: [],
-        dqnSteps: [],
-        d3qnQVals: [],
-        dqnQVals: [],
-        actualReturn: []
+        episodes: [], d3qnRewards: [], dqnRewards: [], d3qnSuccess: [], dqnSuccess: [], d3qnSteps: [], dqnSteps: [], d3qnQVals: [], dqnQVals: [], actualReturn: []
       });
     }
   };
@@ -935,22 +1004,15 @@ export default function App() {
             return prev;
           }
 
-          // Generate simulated reinforcement learning training metrics
-          const logEp = Math.log10(nextEp + 1);
-          
-          // D3QN metrics (dueling + double DQN + multiplicative reward)
           const d3qnRew = 820 * (1 - Math.exp(-nextEp / 18)) - 100 * Math.exp(-nextEp / 5) + (Math.random() * 45 - 22.5);
           const d3qnSucc = 100 / (1 + 9 * Math.exp(-nextEp / 14));
           const d3qnStep = Math.max(26, 120 * Math.exp(-nextEp / 15) + (Math.random() * 8 - 4));
-          // Est Q matches actual return closely (No overestimation)
           const actualR = 520 * (1 - Math.exp(-nextEp / 20)) + (Math.random() * 30 - 15);
           const d3qnQ = actualR + (Math.random() * 20 - 10);
 
-          // Baseline DQN metrics (no dueling, no double DQN, additive reward)
           const dqnRew = 380 * (1 - Math.exp(-nextEp / 35)) - 150 * Math.exp(-nextEp / 8) + (Math.random() * 70 - 35);
           const dqnSucc = 72 / (1 + 12 * Math.exp(-nextEp / 25));
           const dqnStep = Math.max(54, 150 * Math.exp(-nextEp / 25) + (Math.random() * 18 - 9));
-          // Q-value is highly overestimated (overestimation bias!)
           const dqnQ = actualR * 1.6 + 120 * Math.exp(-Math.pow(nextEp - 30, 2) / 600) + 180 * (1 - Math.exp(-nextEp / 50)) + (Math.random() * 40 - 20);
 
           setTrainingData(data => ({
@@ -981,7 +1043,7 @@ export default function App() {
   }, [isTraining]);
 
   // ------------------------------------------------------------------------
-  // Charts Configurations
+  // Dual Chart & Training Chart Options
   // ------------------------------------------------------------------------
   const dualRewardChartData = {
     labels: rewardHistory.map((_, i) => i + 1),
@@ -1012,106 +1074,33 @@ export default function App() {
   const trainingRewardChartData = {
     labels: trainingData.episodes,
     datasets: [
-      {
-        label: "D3QN + Multiplicative",
-        data: trainingData.d3qnRewards,
-        borderColor: COLORS.robot,
-        borderWidth: 2.5,
-        fill: false,
-        pointRadius: 0,
-        tension: 0.15
-      },
-      {
-        label: "DQN Baseline + Additive",
-        data: trainingData.dqnRewards,
-        borderColor: COLORS.robotB,
-        borderWidth: 2,
-        fill: false,
-        pointRadius: 0,
-        tension: 0.15
-      }
+      { label: "D3QN + Multiplicative", data: trainingData.d3qnRewards, borderColor: COLORS.robot, borderWidth: 2.5, fill: false, pointRadius: 0, tension: 0.15 },
+      { label: "DQN Baseline + Additive", data: trainingData.dqnRewards, borderColor: COLORS.robotB, borderWidth: 2, fill: false, pointRadius: 0, tension: 0.15 }
     ]
   };
 
   const trainingSuccessChartData = {
     labels: trainingData.episodes,
     datasets: [
-      {
-        label: "D3QN Success Rate (%)",
-        data: trainingData.d3qnSuccess,
-        borderColor: COLORS.robot,
-        borderWidth: 2.5,
-        fill: false,
-        pointRadius: 0,
-        tension: 0.15
-      },
-      {
-        label: "DQN Success Rate (%)",
-        data: trainingData.dqnSuccess,
-        borderColor: COLORS.robotB,
-        borderWidth: 2,
-        fill: false,
-        pointRadius: 0,
-        tension: 0.15
-      }
+      { label: "D3QN Success Rate (%)", data: trainingData.d3qnSuccess, borderColor: COLORS.robot, borderWidth: 2.5, fill: false, pointRadius: 0, tension: 0.15 },
+      { label: "DQN Success Rate (%)", data: trainingData.dqnSuccess, borderColor: COLORS.robotB, borderWidth: 2, fill: false, pointRadius: 0, tension: 0.15 }
     ]
   };
 
   const trainingStepsChartData = {
     labels: trainingData.episodes,
     datasets: [
-      {
-        label: "D3QN Steps to Goal",
-        data: trainingData.d3qnSteps,
-        borderColor: COLORS.robot,
-        borderWidth: 2.5,
-        fill: false,
-        pointRadius: 0,
-        tension: 0.15
-      },
-      {
-        label: "DQN Steps to Goal",
-        data: trainingData.dqnSteps,
-        borderColor: COLORS.robotB,
-        borderWidth: 2,
-        fill: false,
-        pointRadius: 0,
-        tension: 0.15
-      }
+      { label: "D3QN Steps to Goal", data: trainingData.d3qnSteps, borderColor: COLORS.robot, borderWidth: 2.5, fill: false, pointRadius: 0, tension: 0.15 },
+      { label: "DQN Steps to Goal", data: trainingData.dqnSteps, borderColor: COLORS.robotB, borderWidth: 2, fill: false, pointRadius: 0, tension: 0.15 }
     ]
   };
 
   const trainingOverestChartData = {
     labels: trainingData.episodes,
     datasets: [
-      {
-        label: "Double DQN Est. Q",
-        data: trainingData.d3qnQVals,
-        borderColor: COLORS.robot,
-        borderWidth: 2.5,
-        fill: false,
-        pointRadius: 0,
-        tension: 0.15
-      },
-      {
-        label: "Standard DQN Est. Q (Overestimated)",
-        data: trainingData.dqnQVals,
-        borderColor: COLORS.robotB,
-        borderWidth: 2.5,
-        fill: false,
-        pointRadius: 0,
-        tension: 0.15
-      },
-      {
-        label: "True Discounted Return",
-        data: trainingData.actualReturn,
-        borderColor: "#ffffff",
-        borderDash: [5, 5],
-        borderWidth: 1.5,
-        fill: false,
-        pointRadius: 0,
-        tension: 0.1
-      }
+      { label: "Double DQN Est. Q", data: trainingData.d3qnQVals, borderColor: COLORS.robot, borderWidth: 2.5, fill: false, pointRadius: 0, tension: 0.15 },
+      { label: "Standard DQN Est. Q (Overestimated)", data: trainingData.dqnQVals, borderColor: COLORS.robotB, borderWidth: 2.5, fill: false, pointRadius: 0, tension: 0.15 },
+      { label: "True Discounted Return", data: trainingData.actualReturn, borderColor: "#ffffff", borderDash: [5, 5], borderWidth: 1.5, fill: false, pointRadius: 0, tension: 0.1 }
     ]
   };
 
@@ -1120,32 +1109,16 @@ export default function App() {
     maintainAspectRatio: false,
     animation: false,
     plugins: {
-      legend: { 
-        display: true,
-        labels: { color: COLORS.textDim, boxWidth: 12, font: { size: 10 } }
-      },
-      tooltip: {
-        backgroundColor: COLORS.panel,
-        titleColor: COLORS.textDim,
-        bodyColor: COLORS.textPrimary,
-        borderColor: COLORS.panelBorder,
-        borderWidth: 1,
-      },
+      legend: { display: true, labels: { color: COLORS.textDim, boxWidth: 12, font: { size: 10 } } },
+      tooltip: { backgroundColor: COLORS.panel, titleColor: COLORS.textDim, bodyColor: COLORS.textPrimary, borderColor: COLORS.panelBorder, borderWidth: 1 }
     },
     scales: {
-      x: {
-        ticks: { color: COLORS.textDim, maxTicksLimit: 6 },
-        grid: { color: COLORS.grid },
-      },
-      y: {
-        ticks: { color: COLORS.textDim },
-        grid: { color: COLORS.grid },
-      },
-    },
+      x: { ticks: { color: COLORS.textDim, maxTicksLimit: 6 }, grid: { color: COLORS.grid } },
+      y: { ticks: { color: COLORS.textDim }, grid: { color: COLORS.grid } }
+    }
   };
 
-  // Status mappings
-  const statusDisplay = (stat, col) => ({
+  const statusDisplay = (stat) => ({
     idle: { label: "STANDBY", color: COLORS.textDim },
     navigating: { label: "NAVIGATING", color: COLORS.amber },
     goal_reached: { label: "GOAL REACHED", color: COLORS.goal },
@@ -1158,21 +1131,21 @@ export default function App() {
       style={{ backgroundColor: COLORS.bg }}
     >
       <div className="w-full max-w-6xl">
-        {/* Navigation & Header */}
+        
+        {/* Header & View Tabs */}
         <div className="flex flex-col md:flex-row md:items-baseline md:justify-between mb-6 pb-4 border-b border-gray-800 gap-4">
           <div>
             <h1
               className="text-2xl tracking-widest uppercase font-bold text-left"
               style={{ color: COLORS.textPrimary, letterSpacing: "0.15em" }}
             >
-              Reinforcement Learning Console
+              Reinforcement Learning Sandbox
             </h1>
             <p className="text-xs mt-1 text-left text-gray-400">
-              D3QN (Dueling Double DQN) vs. Baseline Standard DQN Simulator Environment
+              Interactive benchmark environment comparing D3QN vs. Standard DQN configurations
             </p>
           </div>
           
-          {/* Tab Selector */}
           <div className="flex gap-2">
             <button
               onClick={() => { setActiveTab("comparison"); handleReset(); }}
@@ -1199,11 +1172,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* Tab 1: Real-time Side-by-Side Comparison */}
+        {/* Tab 1: Live Simulation Arena */}
         {activeTab === "comparison" && (
           <div className="space-y-6">
             
-            {/* Top Toolbar */}
+            {/* Control Toolbar */}
             <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-lg border border-gray-800 bg-[#11171b]">
               <div className="flex gap-3">
                 <button
@@ -1215,7 +1188,7 @@ export default function App() {
                     border: `1px solid ${COLORS.amber}`
                   }}
                 >
-                  {isRunning ? "⏸ Pause Run" : "▶ Start Both Agents"}
+                  {isRunning ? "⏸ Pause Run" : "▶ Start Simulation"}
                 </button>
                 <button
                   onClick={handleReset}
@@ -1226,7 +1199,7 @@ export default function App() {
                     backgroundColor: "transparent",
                   }}
                 >
-                  🔄 Reset Positions
+                  🔄 Reset Robots
                 </button>
                 <button
                   onClick={handleRandomizeObstacles}
@@ -1237,7 +1210,7 @@ export default function App() {
                     backgroundColor: "transparent",
                   }}
                 >
-                  ⚡ Randomize Blocks
+                  🎲 Randomize
                 </button>
                 <button
                   onClick={() => setIsDrawingMode(!isDrawingMode)}
@@ -1248,7 +1221,7 @@ export default function App() {
                     backgroundColor: isDrawingMode ? "rgba(0, 242, 254, 0.08)" : "transparent",
                   }}
                 >
-                  ✏️ {isDrawingMode ? "Lock Obstacles" : "Draw Custom block"}
+                  ✏️ {isDrawingMode ? "Lock Obstacles" : "Draw Custom Block"}
                 </button>
               </div>
 
@@ -1264,7 +1237,7 @@ export default function App() {
                     backgroundColor: policyMode === "lookahead" ? "rgba(0, 242, 254, 0.08)" : "transparent",
                   }}
                 >
-                  Obstacle Lookahead (MPC)
+                  Lookahead (MPC)
                 </button>
                 <button
                   onClick={() => setPolicyMode("astar")}
@@ -1304,13 +1277,13 @@ export default function App() {
               <div className="p-4 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS.robot }}></span>
+                    <span className="w-3 h-3 rounded-full animate-pulse" style={{ backgroundColor: COLORS.robot }}></span>
                     <h2 className="text-sm font-bold uppercase tracking-wider text-gray-200">
                       Advanced: D3QN Agent
                     </h2>
                   </div>
                   <span className="text-[10px] bg-cyan-950/40 text-cyan-400 px-2 py-0.5 rounded border border-cyan-800 font-mono">
-                    Dueling + Double Q + Multiplicative Reward
+                    Dueling + Double DQN
                   </span>
                 </div>
                 
@@ -1338,7 +1311,7 @@ export default function App() {
               <div className="p-4 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS.robotB }}></span>
+                    <span className="w-3 h-3 rounded-full animate-pulse" style={{ backgroundColor: COLORS.robotB }}></span>
                     <h2 className="text-sm font-bold uppercase tracking-wider text-gray-200">
                       Baseline: Standard DQN Agent
                     </h2>
@@ -1370,10 +1343,111 @@ export default function App() {
 
             </div>
 
-            {/* Live Telemetry & Reward Formulation comparison */}
+            {/* Hyperparameter Settings Panel & Environment Presets */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              
+              {/* Presets and Sandbox Config */}
+              <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
+                <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold border-b border-gray-800 pb-2">
+                  1. Sandbox Environment Presets
+                </h3>
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <button
+                    onClick={() => handleApplyPreset("clear")}
+                    className="p-2 rounded border border-gray-850 hover:bg-gray-800 text-left transition-colors cursor-pointer"
+                    style={{ borderColor: presetName === "clear" ? COLORS.robot : "transparent" }}
+                  >
+                    Clear Arena
+                  </button>
+                  <button
+                    onClick={() => handleApplyPreset("columns")}
+                    className="p-2 rounded border border-gray-850 hover:bg-gray-800 text-left transition-colors cursor-pointer"
+                    style={{ borderColor: presetName === "columns" ? COLORS.robot : "transparent" }}
+                  >
+                    Column Blocks
+                  </button>
+                  <button
+                    onClick={() => handleApplyPreset("corridors")}
+                    className="p-2 rounded border border-gray-850 hover:bg-gray-800 text-left transition-colors cursor-pointer"
+                    style={{ borderColor: presetName === "corridors" ? COLORS.robot : "transparent" }}
+                  >
+                    Slalom Channels
+                  </button>
+                  <button
+                    onClick={() => handleApplyPreset("trap")}
+                    className="p-2 rounded border border-gray-850 hover:bg-gray-800 text-left transition-colors cursor-pointer text-pink-400"
+                    style={{ borderColor: presetName === "trap" ? COLORS.robot : "transparent" }}
+                  >
+                    U-Trap Failzone
+                  </button>
+                </div>
+
+                <div className="pt-2 border-t border-gray-850 flex items-center justify-between text-xs font-mono">
+                  <span className="text-gray-400">Show LiDAR beams:</span>
+                  <input
+                    type="checkbox"
+                    checked={showLidar}
+                    onChange={(e) => setShowLidar(e.target.checked)}
+                    className="w-4 h-4 cursor-pointer accent-cyan-500 rounded"
+                  />
+                </div>
+              </div>
+
+              {/* Dynamic Reward Sliders */}
+              <div className="md:col-span-2 p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
+                <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold border-b border-gray-800 pb-2">
+                  2. Reward Function Sandbox parameters
+                </h3>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 font-mono text-xs">
+                  {/* Slider 1: Goal Reward */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Goal Target Reward:</span>
+                      <span className="text-emerald-400 font-bold">+{goalReward}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="100"
+                      max="1000"
+                      step="50"
+                      value={goalReward}
+                      onChange={(e) => { setGoalReward(Number(e.target.value)); handleReset(); }}
+                      className="w-full accent-emerald-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
+                    />
+                    <p className="text-[10px] text-gray-500">
+                      Higher rewards prioritize faster terminal convergence.
+                    </p>
+                  </div>
+
+                  {/* Slider 2: Collision Penalty */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Collision Penalty:</span>
+                      <span className="text-red-400 font-bold">{collisionPenalty}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="-1000"
+                      max="-50"
+                      step="50"
+                      value={collisionPenalty}
+                      onChange={(e) => { setCollisionPenalty(Number(e.target.value)); handleReset(); }}
+                      className="w-full accent-red-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
+                    />
+                    <p className="text-[10px] text-gray-500">
+                      Heavier penalties dictate conservative, slow navigation paths.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Live Telemetry and Reward Formula */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
-              {/* Telemetry rows */}
+              {/* Telemetry Comparison Table */}
               <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
                 <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold border-b border-gray-800 pb-2">
                   Telemetry Comparison
@@ -1420,31 +1494,31 @@ export default function App() {
                 </table>
               </div>
 
-              {/* Reward Formulation Comparison */}
+              {/* Reward Formula Breakdowns */}
               <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
                 <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold border-b border-gray-800 pb-2">
                   Reward Function Comparison
                 </h3>
                 <div className="grid grid-cols-2 gap-4 text-xs font-mono">
                   <div className="space-y-2">
-                    <span className="text-cyan-400 font-bold">Multiplicative Formulation</span>
+                    <span className="text-cyan-400 font-bold">Multiplicative (D3QN)</span>
                     <div className="p-3 bg-[#0b0f12] rounded border border-cyan-950/60 space-y-1.5">
                       <p className="text-gray-200">R = R_d * R_θ</p>
                       <p className="text-[10px] text-gray-400">R_d = 2 * exp(-d_curr / d_prev)</p>
                       <p className="text-[10px] text-gray-400">R_θ = 5 - cos(θ_error)</p>
                       <p className="text-[10px] text-cyan-500 font-semibold pt-1">
-                        Deviating bearing errors aggressively shrink the step reward.
+                        Deviations are penalized exponentially by the multiplicative factor.
                       </p>
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <span className="text-pink-400 font-bold">Additive Formulation</span>
+                    <span className="text-pink-400 font-bold">Additive (DQN Baseline)</span>
                     <div className="p-3 bg-[#0b0f12] rounded border border-pink-950/60 space-y-1.5">
                       <p className="text-gray-200">R = R_d + R_θ - 2.0</p>
                       <p className="text-[10px] text-gray-400">R_d = 2 * exp(-d_curr / d_prev)</p>
                       <p className="text-[10px] text-gray-400">R_θ = 5 - cos(θ_error)</p>
                       <p className="text-[10px] text-pink-500 font-semibold pt-1">
-                        Allows meanderings because heading deviations do not shrink the distance reward.
+                        Allows meanders; heading error doesn't collapse the distance progress reward.
                       </p>
                     </div>
                   </div>
@@ -1453,10 +1527,10 @@ export default function App() {
 
             </div>
 
-            {/* Dueling DQN Value Breakdown & Step Charts */}
+            {/* Dueling DQN Decomposition stream */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               
-              {/* Live Dueling Value Decomposer Visualizer */}
+              {/* Dueling DQN Breakdown Visualizer */}
               <div className="md:col-span-2 p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
                 <div className="border-b border-gray-800 pb-2 flex justify-between items-center">
                   <h3 className="text-xs uppercase tracking-wider text-cyan-400 font-bold">
@@ -1470,7 +1544,7 @@ export default function App() {
                   <div className="p-3 bg-[#0b0f12] rounded border border-gray-800 flex flex-col justify-between">
                     <div>
                       <h4 className="text-gray-400 font-semibold border-b border-gray-850 pb-1 mb-2">State Value V(s)</h4>
-                      <p className="text-[10px] text-gray-500">Represents baseline utility of being in this location.</p>
+                      <p className="text-[10px] text-gray-500">Represents baseline safety and target bearing estimation of this position.</p>
                     </div>
                     <div className="mt-4">
                       <div className="text-2xl font-bold text-cyan-400">{duelingDecomp.V.toFixed(1)}</div>
@@ -1486,7 +1560,7 @@ export default function App() {
                   {/* Advantage Stream A(s,a) */}
                   <div className="sm:col-span-2 p-3 bg-[#0b0f12] rounded border border-gray-800 space-y-2">
                     <h4 className="text-gray-400 font-semibold border-b border-gray-850 pb-1">Advantage stream A(s, a)</h4>
-                    <p className="text-[10px] text-gray-500 mb-2">Identifies relative value of each discrete steering action.</p>
+                    <p className="text-[10px] text-gray-500 mb-2">Evaluates steer advantage compared to local options.</p>
                     
                     <div className="space-y-1.5">
                       {duelingDecomp.advantages.map((adv, idx) => {
@@ -1515,26 +1589,21 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-
-                <div className="p-3 bg-[#0b0f12] rounded border border-gray-900 text-xs text-gray-400 text-left leading-relaxed">
-                  Notice that <strong className="text-cyan-400 font-semibold">State Value V(s)</strong> drops rapidly as the agent gets stuck or near obstacles (risk penalty), while <strong className="text-emerald-400 font-semibold">Advantage A(s,a)</strong> highlights the exact action index required to steer out of harm's way. A standard DQN outputs only flat Q-values with no state/advantage decomposition, reducing generalization efficiency.
-                </div>
               </div>
 
-              {/* Reward history graph */}
+              {/* Step Reward Chart */}
               <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] flex flex-col justify-between">
                 <div>
                   <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold border-b border-gray-800 pb-2">
                     Live Steps Reward over Time
                   </h3>
-                  <p className="text-[10px] text-gray-500 font-mono mt-1">Updates in real-time as simulation advances.</p>
                 </div>
                 <div className="h-[180px] my-4">
                   {rewardHistory.length > 0 ? (
                     <Line data={dualRewardChartData} options={chartOptions} />
                   ) : (
                     <div className="h-full flex items-center justify-center text-xs text-gray-500">
-                      Telemetry graph will populate once agents start stepping.
+                      Step reward curves will populate as robot steps.
                     </div>
                   )}
                 </div>
@@ -1548,18 +1617,18 @@ export default function App() {
           </div>
         )}
 
-        {/* Tab 2: Training Performance Simulator */}
+        {/* Tab 2: Training Simulator Plots */}
         {activeTab === "training" && (
           <div className="space-y-6">
             
-            {/* Training Dashboard control */}
+            {/* Training Config Header */}
             <div className="flex items-center justify-between p-5 rounded-lg border border-gray-800 bg-[#11171b]">
               <div>
                 <h2 className="text-sm font-bold uppercase tracking-wider text-gray-200">
                   Off-line Training Convergence Monitor
                 </h2>
                 <p className="text-xs text-gray-400 mt-1">
-                  Compare convergence speeds, success rates, and target Q-value estimations over 100 training epochs.
+                  Benchmarking learning convergence speed and estimated Q-value bias.
                 </p>
               </div>
 
@@ -1575,15 +1644,14 @@ export default function App() {
                     color: "#0b0f12",
                   }}
                 >
-                  {isTraining ? "⏹ Stop Training" : trainingEpisode >= 100 ? "🔄 Restart Training Process" : "🏋️ Start Training Simulator"}
+                  {isTraining ? "⏹ Stop Training" : trainingEpisode >= 100 ? "🔄 Restart Training" : "🏋️ Start Training Simulator"}
                 </button>
               </div>
             </div>
 
-            {/* Performance charts grid */}
+            {/* Simulator curves */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               
-              {/* Chart 1: Cumulative Return */}
               <div className="p-4 rounded-xl border border-gray-800 bg-[#11171b] space-y-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-gray-300">
                   Episode Cumulative Reward Curve
@@ -1593,16 +1661,12 @@ export default function App() {
                     <Line data={trainingRewardChartData} options={chartOptions} />
                   ) : (
                     <div className="h-full flex items-center justify-center text-xs text-gray-500">
-                      Press "Start Training Simulator" to see learning curves.
+                      Press "Start Training" to populate learning graphs.
                     </div>
                   )}
                 </div>
-                <p className="text-[10px] text-gray-500 text-left">
-                  Multiplicative rewards heavily penalize meandering, directing D3QN to a higher, more stable reward plateau. Additive reward meanders, producing lower cumulative return.
-                </p>
               </div>
 
-              {/* Chart 2: Success Rate */}
               <div className="p-4 rounded-xl border border-gray-800 bg-[#11171b] space-y-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-gray-300">
                   Success Rate (%) over Episodes
@@ -1612,16 +1676,12 @@ export default function App() {
                     <Line data={trainingSuccessChartData} options={chartOptions} />
                   ) : (
                     <div className="h-full flex items-center justify-center text-xs text-gray-500">
-                      Press "Start Training Simulator" to see success rates.
+                      Press "Start Training" to populate learning graphs.
                     </div>
                   )}
                 </div>
-                <p className="text-[10px] text-gray-500 text-left">
-                  The dueling architecture splits state/advantage to generalize obstacle risk quickly, driving success rates to ~98%. Baseline Standard DQN plateaus near ~72%.
-                </p>
               </div>
 
-              {/* Chart 3: Steps to Goal */}
               <div className="p-4 rounded-xl border border-gray-800 bg-[#11171b] space-y-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-gray-300">
                   Average Episode Steps to Goal
@@ -1631,16 +1691,12 @@ export default function App() {
                     <Line data={trainingStepsChartData} options={chartOptions} />
                   ) : (
                     <div className="h-full flex items-center justify-center text-xs text-gray-500">
-                      Press "Start Training Simulator" to see steps history.
+                      Press "Start Training" to populate learning graphs.
                     </div>
                   )}
                 </div>
-                <p className="text-[10px] text-gray-500 text-left">
-                  D3QN optimizes for the shortest trajectory due to discount factor constraints and straight bearing optimization. Baseline DQN spends excess steps drifting.
-                </p>
               </div>
 
-              {/* Chart 4: Overestimation Bias */}
               <div className="p-4 rounded-xl border border-gray-800 bg-[#11171b] space-y-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-gray-300">
                   Q-value Overestimation Analysis
@@ -1650,13 +1706,10 @@ export default function App() {
                     <Line data={trainingOverestChartData} options={chartOptions} />
                   ) : (
                     <div className="h-full flex items-center justify-center text-xs text-gray-500">
-                      Press "Start Training Simulator" to see Q-value estimates.
+                      Press "Start Training" to populate learning graphs.
                     </div>
                   )}
                 </div>
-                <p className="text-[10px] text-gray-500 text-left">
-                  Standard DQN exhibits severe overestimation (predicted Q vastly exceeds true return), resulting in unstable training. Double DQN's target network decouples action selection to match true returns.
-                </p>
               </div>
 
             </div>

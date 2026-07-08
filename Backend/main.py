@@ -99,6 +99,8 @@ class StepRequest(BaseModel):
     reward_type: Literal["multiplicative", "additive"] = Field(
         default="multiplicative", description="Type of reward formulation to use"
     )
+    goal_reward: float = Field(default=500.0, description="Reward for reaching the goal")
+    collision_reward: float = Field(default=-100.0, description="Penalty for collision or out of bounds")
 
 
 class StepResponse(BaseModel):
@@ -223,11 +225,11 @@ def step(request: StepRequest) -> StepResponse:
     status: StatusType = "navigating"
 
     if current_distance < GOAL_THRESHOLD:
-        reward += GOAL_REWARD
+        reward += request.goal_reward
         done = True
         status = "goal_reached"
     elif is_out_of_bounds(new_x, new_y) or is_colliding_with_obstacles(new_x, new_y, request.obstacles):
-        reward += COLLISION_REWARD
+        reward += request.collision_reward
         done = True
         status = "collision"
         # Clamp position so the returned state stays within the canvas.

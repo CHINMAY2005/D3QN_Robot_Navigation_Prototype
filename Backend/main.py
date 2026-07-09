@@ -101,9 +101,8 @@ class StepRequest(BaseModel):
     )
     goal_reward: float = Field(default=500.0, description="Reward for reaching the goal")
     collision_reward: float = Field(default=-100.0, description="Penalty for collision or out of bounds")
-    goal_x: float = Field(default=520.0, description="Target goal x coordinate")
-    goal_y: float = Field(default=200.0, description="Target goal y coordinate")
-    noise_level: float = Field(default=0.0, description="Standard deviation for Gaussian noise in actuator actions")
+    w_d: float = Field(default=1.0, description="Weight factor for progress reward")
+    w_theta: float = Field(default=1.0, description="Weight factor for alignment reward")
 
 
 class StepResponse(BaseModel):
@@ -169,6 +168,8 @@ def compute_reward(
     prev_distance: float,
     theta_error: float,
     reward_type: str = "multiplicative",
+    w_d: float = 1.0,
+    w_theta: float = 1.0,
 ) -> tuple[float, float, float]:
     """
     Composite reward:
@@ -181,8 +182,8 @@ def compute_reward(
                                           the more the robot has closed the
                                           distance to the goal this step.
     """
-    r_theta = 5.0 - math.cos(theta_error)
-    r_d = 2.0 * math.exp(-current_distance / prev_distance)
+    r_theta = (5.0 - math.cos(theta_error)) * w_theta
+    r_d = (2.0 * math.exp(-current_distance / prev_distance)) * w_d
     if reward_type == "additive":
         return r_d, r_theta, r_d + r_theta - 2.0
     else:
@@ -202,16 +203,8 @@ def step(request: StepRequest) -> StepResponse:
     # 1. Map discrete action to angular velocity, use fixed linear velocity.
     angular_velocity = ANGULAR_VELOCITIES[request.action]
     linear_velocity = LINEAR_VELOCITY
-
-    # Apply Gaussian actuator/motion noise if noise_level > 0.0
-    if request.noise_level > 0.0:
-        import random
-        # Perturb angular velocity (std dev proportional to noise_level)
-        angular_velocity += random.gauss(0.0, request.noise_level * 1.5)
-        # Perturb linear velocity (std dev proportional to noise_level, keep positive)
-        linear_velocity = max(0.0, linear_velocity + random.gauss(0.0, request.noise_level * 8.0))
     
-    dist_to_goal = compute_distance(request.x, request.y, request.goal_x, request.goal_y)
+    dist_to_goal = compute_distance(request.x, request.y, GOAL_X, GOAL_Y)
     if dist_to_goal < LINEAR_VELOCITY * TIME_STEP:
         linear_velocity = dist_to_goal / TIME_STEP
 
@@ -221,11 +214,18 @@ def step(request: StepRequest) -> StepResponse:
     new_y = request.y + linear_velocity * math.sin(new_theta) * TIME_STEP
 
     # 3. Compute new distance to goal and heading error.
-    current_distance = compute_distance(new_x, new_y, request.goal_x, request.goal_y)
-    theta_error = compute_theta_error(new_x, new_y, new_theta, request.goal_x, request.goal_y)
+    current_distance = compute_distance(new_x, new_y, GOAL_X, GOAL_Y)
+    theta_error = compute_theta_error(new_x, new_y, new_theta, GOAL_X, GOAL_Y)
 
     # 4. Base reward.
-    r_d, r_theta, reward = compute_reward(current_distance, request.prev_distance, theta_error, request.reward_type)
+    r_d, r_theta, reward = compute_reward(
+        current_distance,
+        request.prev_distance,
+        theta_error,
+        request.reward_type,
+        request.w_d,
+        request.w_theta,
+    )
 
     # Theoretical Efficiency Score calculation
     # Ratio of initial straight line distance to current steps taken

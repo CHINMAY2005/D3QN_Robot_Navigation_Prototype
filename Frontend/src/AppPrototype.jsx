@@ -11,7 +11,6 @@ import {
 } from "chart.js";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler);
-import AppPrototype from "./AppPrototype.jsx";
 
 // --------------------------------------------------------------------------
 // Constants — must stay in sync with the FastAPI backend (main.py)
@@ -61,12 +60,13 @@ const COLORS = {
 // Raycasting & Spatial Sensing (LiDAR)
 // --------------------------------------------------------------------------
 
-function calculateLidarRanges(x, y, theta, obstaclesList, numRays = 8) {
+function calculateLidarRanges(x, y, theta, obstaclesList) {
+  const numRays = 8;
   const maxRange = 300; 
   const ranges = [];
 
   for (let i = 0; i < numRays; i++) {
-    const phi = theta + (i * 2 * Math.PI) / numRays;
+    const phi = theta + (i * Math.PI) / 4;
     const dx = Math.cos(phi);
     const dy = Math.sin(phi);
 
@@ -376,8 +376,7 @@ function distanceTo(x, y, target) {
 // Main Component
 // --------------------------------------------------------------------------
 
-export default function App() {
-  const [viewMode, setViewMode] = useState("upgraded");
+export default function AppPrototype({ onViewModeChange }) {
   const [activeTab, setActiveTab] = useState("comparison");
 
   // Multi-Robot Configuration
@@ -396,13 +395,6 @@ export default function App() {
   const [goalReward, setGoalReward] = useState(500);
   const [collisionPenalty, setCollisionPenalty] = useState(-100);
   const [showLidar, setShowLidar] = useState(true);
-
-  // Upgraded Feature States
-  const [lidarRays, setLidarRays] = useState(8);
-  const [movingObstacles, setMovingObstacles] = useState(false);
-  const [obstacleSpeed, setObstacleSpeed] = useState(4);
-  const [wD, setWD] = useState(1.0);
-  const [wTheta, setWTheta] = useState(1.0);
 
   // Shared simulation state
   const [isRunning, setIsRunning] = useState(false);
@@ -484,10 +476,6 @@ export default function App() {
   const policyModeRef = useRef(policyMode);
   const goalRewardRef = useRef(goalReward);
   const collisionPenaltyRef = useRef(collisionPenalty);
-  const movingObstaclesRef = useRef(movingObstacles);
-  const obstacleSpeedRef = useRef(obstacleSpeed);
-  const wDRef = useRef(wD);
-  const wThetaRef = useRef(wTheta);
 
   useEffect(() => { robotsRef.current = robots; }, [robots]);
   useEffect(() => { robotsBRef.current = robotsB; }, [robotsB]);
@@ -495,10 +483,6 @@ export default function App() {
   useEffect(() => { policyModeRef.current = policyMode; }, [policyMode]);
   useEffect(() => { goalRewardRef.current = goalReward; }, [goalReward]);
   useEffect(() => { collisionPenaltyRef.current = collisionPenalty; }, [collisionPenalty]);
-  useEffect(() => { movingObstaclesRef.current = movingObstacles; }, [movingObstacles]);
-  useEffect(() => { obstacleSpeedRef.current = obstacleSpeed; }, [obstacleSpeed]);
-  useEffect(() => { wDRef.current = wD; }, [wD]);
-  useEffect(() => { wThetaRef.current = wTheta; }, [wTheta]);
 
   // Apply layout presets
   const handleApplyPreset = (name) => {
@@ -593,9 +577,9 @@ export default function App() {
 
       // Draw LiDAR range beams for selected robot
       if (showLidar && isSelected) {
-        const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, obstacles, lidarRays);
+        const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, obstacles);
         ranges.forEach((dist, idx) => {
-          const phi = robotState.theta + (idx * 2 * Math.PI) / lidarRays;
+          const phi = robotState.theta + (idx * Math.PI) / 4;
           const beamX = robotState.x + dist * Math.cos(phi);
           const beamY = robotState.y + dist * Math.sin(phi);
 
@@ -824,60 +808,17 @@ export default function App() {
       }
     ]);
 
-    // 1. Move obstacles if enabled
-    let currentObstacles = obstaclesRef.current;
-    if (movingObstaclesRef.current) {
-      currentObstacles = currentObstacles.map(obs => {
-        let vx = obs.vx;
-        let vy = obs.vy;
-        if (vx === undefined || vy === undefined) {
-          const angle = Math.random() * Math.PI * 2;
-          vx = Math.cos(angle) * obstacleSpeedRef.current;
-          vy = Math.sin(angle) * obstacleSpeedRef.current;
-        } else {
-          const currentSpeed = Math.hypot(vx, vy);
-          if (Math.abs(currentSpeed - obstacleSpeedRef.current) > 0.01) {
-            const ratio = obstacleSpeedRef.current / (currentSpeed || 1);
-            vx *= ratio;
-            vy *= ratio;
-          }
-        }
-        
-        let newX = obs.x + vx;
-        let newY = obs.y + vy;
-        
-        if (newX <= 0) {
-          newX = 0;
-          vx = -vx;
-        } else if (newX + obs.width >= CANVAS_WIDTH) {
-          newX = CANVAS_WIDTH - obs.width;
-          vx = -vx;
-        }
-        
-        if (newY <= 0) {
-          newY = 0;
-          vy = -vy;
-        } else if (newY + obs.height >= CANVAS_HEIGHT) {
-          newY = CANVAS_HEIGHT - obs.height;
-          vy = -vy;
-        }
-        
-        return { ...obs, x: newX, y: newY, vx, vy };
-      });
-      setObstacles(currentObstacles);
-    }
-
     // Construct promises for active D3QN robots
     const advancedPromises = activeRobots.map((r, index) => {
       if (r.status === "goal_reached" || r.status === "collision") {
         return Promise.resolve(null);
       }
 
-      // Apply A* or Lookahead or Greedy steering using currentObstacles
+      // Apply A* or Lookahead or Greedy steering
       const actionObj = policyModeRef.current === "lookahead"
-        ? selectLookaheadAction(r.x, r.y, r.theta, currentObstacles)
+        ? selectLookaheadAction(r.x, r.y, r.theta, obstaclesRef.current)
         : policyModeRef.current === "astar" 
-        ? selectAStarAction(r.x, r.y, r.theta, currentObstacles)
+        ? selectAStarAction(r.x, r.y, r.theta, obstaclesRef.current)
         : selectGreedyAction(r.x, r.y, r.theta);
 
       return fetch(API_URL, {
@@ -891,12 +832,10 @@ export default function App() {
           initial_distance: Math.hypot(GOAL.x - startPositions[index].x, GOAL.y - startPositions[index].y),
           step_count: r.stepCount,
           action: actionObj.action,
-          obstacles: currentObstacles,
+          obstacles: obstaclesRef.current,
           reward_type: "multiplicative",
           goal_reward: goalRewardRef.current,
-          collision_reward: collisionPenaltyRef.current,
-          w_d: wDRef.current,
-          w_theta: wThetaRef.current
+          collision_reward: collisionPenaltyRef.current
         }),
       }).then(res => res.json()).then(data => ({ index, data }));
     });
@@ -907,7 +846,7 @@ export default function App() {
         return Promise.resolve(null);
       }
 
-      const actionObjB = selectBaselineAction(r.x, r.y, r.theta, currentObstacles);
+      const actionObjB = selectBaselineAction(r.x, r.y, r.theta, obstaclesRef.current);
 
       return fetch(API_URL, {
         method: "POST",
@@ -920,12 +859,10 @@ export default function App() {
           initial_distance: Math.hypot(GOAL.x - startPositions[index].x, GOAL.y - startPositions[index].y),
           step_count: r.stepCount,
           action: actionObjB.action,
-          obstacles: currentObstacles,
+          obstacles: obstaclesRef.current,
           reward_type: "additive",
           goal_reward: goalRewardRef.current,
-          collision_reward: collisionPenaltyRef.current,
-          w_d: wDRef.current,
-          w_theta: wThetaRef.current
+          collision_reward: collisionPenaltyRef.current
         }),
       }).then(res => res.json()).then(data => ({ index, data }));
     });
@@ -1304,10 +1241,6 @@ export default function App() {
     return mapping[stat] || { label: "STANDBY", color: COLORS.textDim };
   };
 
-  if (viewMode === "prototype") {
-    return <AppPrototype onViewModeChange={setViewMode} />;
-  }
-
   return (
     <div
       className="min-h-screen w-full flex flex-col items-center p-6 font-sans text-left"
@@ -1327,6 +1260,14 @@ export default function App() {
             <p className="text-xs mt-1 text-left text-gray-400">
               Interactive multi-robot simulation canvas evaluating lookahead vs. standard DQN models
             </p>
+            {onViewModeChange && (
+              <button
+                onClick={() => onViewModeChange("upgraded")}
+                className="mt-2 inline-flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-semibold px-2.5 py-1 rounded border border-cyan-850 text-cyan-400 bg-cyan-950/20 hover:bg-cyan-950/40 cursor-pointer transition-colors"
+              >
+                ← Return to Upgraded Version
+              </button>
+            )}
           </div>
           
           <div className="flex gap-2">
@@ -1351,22 +1292,6 @@ export default function App() {
               }}
             >
               Training Performance Plots
-            </button>
-            
-            <button
-              onClick={() => setViewMode("prototype")}
-              title="View Original Prototype"
-              className="p-1.5 rounded-full border transition-all cursor-pointer flex items-center justify-center hover:bg-amber-500/10 hover:shadow-[0_0_8px_rgba(245,166,35,0.4)]"
-              style={{
-                color: COLORS.amber,
-                borderColor: COLORS.panelBorder,
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M10 2v7.5L5.5 17c-1.2 1.5-.1 3.8 1.8 3.8h9.4c1.9 0 3-2.3 1.8-3.8L14 9.5V2" />
-                <path d="M8.5 2h7" />
-                <path d="M7 16h10" />
-              </svg>
             </button>
           </div>
         </div>
@@ -1632,52 +1557,6 @@ export default function App() {
                       className="w-4 h-4 cursor-pointer accent-cyan-500 rounded"
                     />
                   </div>
-
-                  {showLidar && (
-                    <div className="space-y-1 pt-1">
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-500">LiDAR Beams:</span>
-                        <span className="text-cyan-400 font-bold">{lidarRays} rays</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="4"
-                        max="32"
-                        step="4"
-                        value={lidarRays}
-                        onChange={(e) => setLidarRays(Number(e.target.value))}
-                        className="w-full accent-cyan-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                      />
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between pt-2 border-t border-gray-850">
-                    <span className="text-gray-400">Moving Obstacles:</span>
-                    <input
-                      type="checkbox"
-                      checked={movingObstacles}
-                      onChange={(e) => setMovingObstacles(e.target.checked)}
-                      className="w-4 h-4 cursor-pointer accent-amber-500 rounded"
-                    />
-                  </div>
-
-                  {movingObstacles && (
-                    <div className="space-y-1 pt-1">
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-500">Obstacle Speed:</span>
-                        <span className="text-amber-400 font-bold">{obstacleSpeed} px/step</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="1"
-                        max="10"
-                        step="1"
-                        value={obstacleSpeed}
-                        onChange={(e) => setObstacleSpeed(Number(e.target.value))}
-                        className="w-full accent-amber-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                      />
-                    </div>
-                  )}
                 </div>
               </div>
 
@@ -1725,46 +1604,6 @@ export default function App() {
                     />
                     <p className="text-[10px] text-gray-500">
                       Penalties trigger cautious paths around blocks.
-                    </p>
-                  </div>
-
-                  {/* Slider 3: Progress Weight (W_d) */}
-                  <div className="space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Progress Weight (W_d):</span>
-                      <span className="text-cyan-400 font-bold">x{wD.toFixed(1)}</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0.1"
-                      max="5.0"
-                      step="0.1"
-                      value={wD}
-                      onChange={(e) => { setWD(Number(e.target.value)); handleReset(); }}
-                      className="w-full accent-cyan-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                    />
-                    <p className="text-[10px] text-gray-500">
-                      Multiplies the distance progress reward component.
-                    </p>
-                  </div>
-
-                  {/* Slider 4: Alignment Weight (W_theta) */}
-                  <div className="space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Alignment Weight (W_theta):</span>
-                      <span className="text-amber-400 font-bold">x{wTheta.toFixed(1)}</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0.1"
-                      max="5.0"
-                      step="0.1"
-                      value={wTheta}
-                      onChange={(e) => { setWTheta(Number(e.target.value)); handleReset(); }}
-                      className="w-full accent-amber-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                    />
-                    <p className="text-[10px] text-gray-500">
-                      Multiplies the bearing heading alignment component.
                     </p>
                   </div>
                 </div>

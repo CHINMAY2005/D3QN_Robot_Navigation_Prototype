@@ -105,6 +105,11 @@ class StepRequest(BaseModel):
     w_theta: float = Field(default=1.0, description="Weight factor for alignment reward")
     goal_x: float = Field(default=520.0, description="Target goal x coordinate")
     goal_y: float = Field(default=200.0, description="Target goal y coordinate")
+    prev_vx: float = Field(default=0.0, description="Previous linear velocity component in x")
+    prev_vy: float = Field(default=0.0, description="Previous linear velocity component in y")
+    prev_omega: float = Field(default=0.0, description="Previous angular velocity")
+    momentum: float = Field(default=0.0, description="Linear momentum friction coefficient [0.0 - 0.95]")
+    drift: float = Field(default=0.0, description="Rotational drift damping factor [0.0 - 0.95]")
 
 
 class StepResponse(BaseModel):
@@ -118,6 +123,9 @@ class StepResponse(BaseModel):
     efficiency_score: float
     done: bool
     status: StatusType
+    vx: float
+    vy: float
+    omega: float
 
 
 # --------------------------------------------------------------------------
@@ -210,10 +218,19 @@ def step(request: StepRequest) -> StepResponse:
     if dist_to_goal < LINEAR_VELOCITY * TIME_STEP:
         linear_velocity = dist_to_goal / TIME_STEP
 
-    # 2. Integrate kinematics (simple differential-drive / unicycle model).
-    new_theta = normalize_angle(request.theta + angular_velocity * TIME_STEP)
-    new_x = request.x + linear_velocity * math.cos(new_theta) * TIME_STEP
-    new_y = request.y + linear_velocity * math.sin(new_theta) * TIME_STEP
+    # Target velocity components
+    target_vx = linear_velocity * math.cos(request.theta)
+    target_vy = linear_velocity * math.sin(request.theta)
+
+    # 2. Apply Momentum & Drift (Inertial physical factors)
+    vx = (1 - request.momentum) * target_vx + request.momentum * request.prev_vx
+    vy = (1 - request.momentum) * target_vy + request.momentum * request.prev_vy
+    omega = (1 - request.drift) * angular_velocity + request.drift * request.prev_omega
+
+    # Integrate kinematics (damped differential-drive / unicycle model).
+    new_theta = normalize_angle(request.theta + omega * TIME_STEP)
+    new_x = request.x + vx * TIME_STEP
+    new_y = request.y + vy * TIME_STEP
 
     # 3. Compute new distance to goal and heading error.
     current_distance = compute_distance(new_x, new_y, request.goal_x, request.goal_y)
@@ -260,6 +277,9 @@ def step(request: StepRequest) -> StepResponse:
         efficiency_score=efficiency_score,
         done=done,
         status=status,
+        vx=vx,
+        vy=vy,
+        omega=omega,
     )
 
 

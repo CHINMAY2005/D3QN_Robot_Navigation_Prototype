@@ -61,12 +61,15 @@ const COLORS = {
 // Raycasting & Spatial Sensing (LiDAR)
 // --------------------------------------------------------------------------
 
-function calculateLidarRanges(x, y, theta, obstaclesList, numRays = 8) {
-  const maxRange = 300; 
+function calculateLidarRanges(x, y, theta, obstaclesList, numRays = 8, fovDeg = 360, maxRange = 300) {
   const ranges = [];
+  const fovRad = (fovDeg * Math.PI) / 180;
+  const startAngle = fovDeg === 360 ? 0 : -fovRad / 2;
+  const angleStep = fovDeg === 360 ? (Math.PI * 2) / numRays : fovRad / (numRays > 1 ? numRays - 1 : 1);
 
   for (let i = 0; i < numRays; i++) {
-    const phi = theta + (i * 2 * Math.PI) / numRays;
+    const offset = startAngle + i * angleStep;
+    const phi = normalizeAngle(theta + offset);
     const dx = Math.cos(phi);
     const dy = Math.sin(phi);
 
@@ -406,6 +409,11 @@ export default function App() {
   const [movingGoal, setMovingGoal] = useState(false);
   const [goalPos, setGoalPos] = useState({ x: 520, y: 200 });
   const [sessionLogs, setSessionLogs] = useState([]);
+  const [lidarFov, setLidarFov] = useState(360);
+  const [lidarRange, setLidarRange] = useState(300);
+  const [momentum, setMomentum] = useState(0.0);
+  const [drift, setDrift] = useState(0.0);
+  const [showAStarPath, setShowAStarPath] = useState(true);
 
   // Shared simulation state
   const [isRunning, setIsRunning] = useState(false);
@@ -445,6 +453,8 @@ export default function App() {
   const wThetaRef = useRef(wTheta);
   const movingGoalRef = useRef(movingGoal);
   const goalPosRef = useRef(goalPos);
+  const momentumRef = useRef(momentum);
+  const driftRef = useRef(drift);
 
   // Initialize robot state lists
   const initializeRobots = useCallback(() => {
@@ -465,6 +475,9 @@ export default function App() {
         cumulativeReward: 0,
         jerk: 0,
         lastOmega: 0,
+        vx: 0,
+        vy: 0,
+        omega: 0,
         pathHistory: [],
         rewardHistory: [],
         liveRewardDetails: {
@@ -510,6 +523,8 @@ export default function App() {
   useEffect(() => { wThetaRef.current = wTheta; }, [wTheta]);
   useEffect(() => { movingGoalRef.current = movingGoal; }, [movingGoal]);
   useEffect(() => { goalPosRef.current = goalPos; }, [goalPos]);
+  useEffect(() => { momentumRef.current = momentum; }, [momentum]);
+  useEffect(() => { driftRef.current = drift; }, [drift]);
 
   // Apply layout presets
   const handleApplyPreset = (name) => {
@@ -537,6 +552,39 @@ export default function App() {
     }
     setObstacles(newObs);
     handleReset();
+  };
+
+  const handleExportLayout = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(obstacles));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", `obstacle-layout-${presetName}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  };
+
+  const handleImportLayout = (e) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    const fileReader = new FileReader();
+    fileReader.readAsText(e.target.files[0], "UTF-8");
+    fileReader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target.result);
+        if (Array.isArray(parsed)) {
+          const validated = parsed.filter(obs => obs && typeof obs.x === 'number' && typeof obs.y === 'number' && typeof obs.width === 'number' && typeof obs.height === 'number');
+          setObstacles(validated);
+          setPresetName("imported");
+          setTimeout(() => {
+            handleReset();
+          }, 50);
+        } else {
+          alert("Invalid layout format. Expected JSON array of rectangular obstacles.");
+        }
+      } catch (err) {
+        alert("Failed to parse layout file. Ensure it is a valid JSON file.");
+      }
+    };
   };
 
   // ------------------------------------------------------------------------
@@ -602,11 +650,33 @@ export default function App() {
     robotStatesList.forEach((robotState, rIdx) => {
       const isSelected = rIdx === selectedRobotIndex;
 
+      // Draw A* Path guide overlay
+      if (showAStarPath && isSelected) {
+        const astarPoints = astarPath(robotState.x, robotState.y, goalPos.x, goalPos.y, obstacles);
+        if (astarPoints && astarPoints.length > 1) {
+          ctx.beginPath();
+          ctx.setLineDash([4, 4]);
+          ctx.moveTo(robotState.x, robotState.y);
+          astarPoints.forEach(node => {
+            ctx.lineTo(node.x, node.y);
+          });
+          ctx.strokeStyle = rIdx === 0 ? "rgba(34, 211, 238, 0.4)" : "rgba(244, 114, 182, 0.4)";
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+
       // Draw LiDAR range beams for selected robot
       if (showLidar && isSelected) {
-        const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, obstacles, lidarRays);
+        const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, obstacles, lidarRays, lidarFov, lidarRange);
+        const fovRad = (lidarFov * Math.PI) / 180;
+        const startAngle = lidarFov === 360 ? 0 : -fovRad / 2;
+        const angleStep = lidarFov === 360 ? (Math.PI * 2) / lidarRays : fovRad / (lidarRays > 1 ? lidarRays - 1 : 1);
+
         ranges.forEach((dist, idx) => {
-          const phi = robotState.theta + (idx * 2 * Math.PI) / lidarRays;
+          const offset = startAngle + idx * angleStep;
+          const phi = normalizeAngle(robotState.theta + offset);
           const beamX = robotState.x + dist * Math.cos(phi);
           const beamY = robotState.y + dist * Math.sin(phi);
 
@@ -626,6 +696,30 @@ export default function App() {
           ctx.fillStyle = beamColor;
           ctx.fill();
         });
+
+        // Safety proximity circle around selected robot
+        const minRay = Math.min(...ranges);
+        let ringColor = "rgba(79, 214, 122, 0.25)";
+        let isCritical = false;
+        
+        if (minRay <= 30) {
+          ringColor = "rgba(240, 84, 107, 0.75)";
+          isCritical = true;
+        } else if (minRay <= 65) {
+          ringColor = "rgba(245, 166, 35, 0.45)";
+        }
+        
+        ctx.beginPath();
+        ctx.arc(robotState.x, robotState.y, ROBOT_RADIUS + 8, 0, Math.PI * 2);
+        ctx.strokeStyle = ringColor;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        if (isCritical) {
+          ctx.fillStyle = "rgba(240, 84, 107, 0.9)";
+          ctx.font = "bold 9px monospace";
+          ctx.fillText("⚠️ CRITICAL PROXIMITY", 10, 18);
+        }
       }
 
       // Draw Path History
@@ -918,7 +1012,12 @@ export default function App() {
           w_d: wDRef.current,
           w_theta: wThetaRef.current,
           goal_x: currentGoal.x,
-          goal_y: currentGoal.y
+          goal_y: currentGoal.y,
+          prev_vx: r.vx || 0,
+          prev_vy: r.vy || 0,
+          prev_omega: r.omega || 0,
+          momentum: momentumRef.current,
+          drift: driftRef.current
         }),
       }).then(res => res.json()).then(data => ({ index, data, action: actionObj.action }));
     });
@@ -949,7 +1048,12 @@ export default function App() {
           w_d: wDRef.current,
           w_theta: wThetaRef.current,
           goal_x: currentGoal.x,
-          goal_y: currentGoal.y
+          goal_y: currentGoal.y,
+          prev_vx: r.vx || 0,
+          prev_vy: r.vy || 0,
+          prev_omega: r.omega || 0,
+          momentum: momentumRef.current,
+          drift: driftRef.current
         }),
       }).then(res => res.json()).then(data => ({ index, data, action: actionObjB.action }));
     });
@@ -994,6 +1098,9 @@ export default function App() {
           cumulativeReward: current.cumulativeReward + data.reward,
           jerk: nextJerk,
           lastOmega: omega,
+          vx: data.vx,
+          vy: data.vy,
+          omega: data.omega,
           pathHistory: [...current.pathHistory, { x: current.x, y: current.y }],
           rewardHistory: [...current.rewardHistory, data.reward].slice(-100),
           liveRewardDetails: {
@@ -1040,6 +1147,9 @@ export default function App() {
           cumulativeReward: current.cumulativeReward + data.reward,
           jerk: nextJerk,
           lastOmega: omega,
+          vx: data.vx,
+          vy: data.vy,
+          omega: data.omega,
           pathHistory: [...current.pathHistory, { x: current.x, y: current.y }],
           rewardHistory: [...current.rewardHistory, data.reward].slice(-100),
           liveRewardDetails: {
@@ -1641,7 +1751,25 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="pt-2 border-t border-gray-850 space-y-2 text-xs font-mono">
+                <div className="flex gap-2 text-[10px] font-mono justify-between pt-1 border-b border-gray-850 pb-3">
+                  <button
+                    onClick={handleExportLayout}
+                    className="flex-1 px-2.5 py-1.5 rounded border border-cyan-900 bg-cyan-950/20 text-cyan-400 hover:bg-cyan-900/30 transition-all text-center cursor-pointer font-bold uppercase tracking-wider"
+                  >
+                    💾 Export JSON
+                  </button>
+                  <label className="flex-1 px-2.5 py-1.5 rounded border border-amber-900 bg-amber-950/20 text-amber-400 hover:bg-amber-900/30 transition-all text-center cursor-pointer font-bold uppercase tracking-wider select-none">
+                    📂 Import JSON
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={handleImportLayout}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                <div className="pt-2 space-y-2 text-xs font-mono">
                   {/* Select number of robots dropdown */}
                   <div className="flex items-center justify-between">
                     <span className="text-gray-400">Number of Robots:</span>
@@ -1681,21 +1809,65 @@ export default function App() {
                     />
                   </div>
 
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-gray-400">Show A* Global path:</span>
+                    <input
+                      type="checkbox"
+                      checked={showAStarPath}
+                      onChange={(e) => setShowAStarPath(e.target.checked)}
+                      className="w-4 h-4 cursor-pointer accent-indigo-500 rounded"
+                    />
+                  </div>
+
                   {showLidar && (
-                    <div className="space-y-1 pt-1">
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-500">LiDAR Beams:</span>
-                        <span className="text-cyan-400 font-bold">{lidarRays} rays</span>
+                    <div className="space-y-2 pt-1 border-b border-gray-850/40 pb-2">
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-gray-500">LiDAR Beams:</span>
+                          <span className="text-cyan-400 font-bold">{lidarRays} rays</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="4"
+                          max="32"
+                          step="4"
+                          value={lidarRays}
+                          onChange={(e) => setLidarRays(Number(e.target.value))}
+                          className="w-full accent-cyan-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
+                        />
                       </div>
-                      <input
-                        type="range"
-                        min="4"
-                        max="32"
-                        step="4"
-                        value={lidarRays}
-                        onChange={(e) => setLidarRays(Number(e.target.value))}
-                        className="w-full accent-cyan-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                      />
+                      
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-gray-500">LiDAR Sweep FOV:</span>
+                          <span className="text-cyan-400 font-bold">{lidarFov}°</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="90"
+                          max="360"
+                          step="30"
+                          value={lidarFov}
+                          onChange={(e) => setLidarFov(Number(e.target.value))}
+                          className="w-full accent-cyan-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-gray-500">LiDAR Max Range:</span>
+                          <span className="text-cyan-400 font-bold">{lidarRange}px</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="50"
+                          max="400"
+                          step="25"
+                          value={lidarRange}
+                          onChange={(e) => setLidarRange(Number(e.target.value))}
+                          className="w-full accent-cyan-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
+                        />
+                      </div>
                     </div>
                   )}
 
@@ -1833,6 +2005,54 @@ export default function App() {
                 </div>
               </div>
 
+            </div>
+
+            {/* Dynamics & Physics Section */}
+            <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
+              <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold border-b border-gray-800 pb-2">
+                3. Dynamics & Physics constraints sandbox
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 font-mono text-xs">
+                {/* Linear Momentum Slider */}
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Linear Momentum (Friction):</span>
+                    <span className="text-indigo-400 font-bold">{momentum.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.0"
+                    max="0.9"
+                    step="0.05"
+                    value={momentum}
+                    onChange={(e) => { setMomentum(Number(e.target.value)); handleReset(); }}
+                    className="w-full accent-indigo-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
+                  />
+                  <p className="text-[10px] text-gray-500">
+                    Determines how long the robot retains linear speed (inertia). Higher values cause slides.
+                  </p>
+                </div>
+
+                {/* Rotational Drift Slider */}
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Rotational Drift (Slip):</span>
+                    <span className="text-pink-400 font-bold">{drift.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.0"
+                    max="0.9"
+                    step="0.05"
+                    value={drift}
+                    onChange={(e) => { setDrift(Number(e.target.value)); handleReset(); }}
+                    className="w-full accent-pink-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
+                  />
+                  <p className="text-[10px] text-gray-500">
+                    Determines heading correction damping (slip angle). Higher values cause wide turning drifts.
+                  </p>
+                </div>
+              </div>
             </div>
 
             {/* Live Telemetry & Reward Formula (displays metrics for selected robot) */}

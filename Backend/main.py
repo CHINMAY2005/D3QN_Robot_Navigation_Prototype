@@ -103,6 +103,8 @@ class StepRequest(BaseModel):
     collision_reward: float = Field(default=-100.0, description="Penalty for collision or out of bounds")
     w_d: float = Field(default=1.0, description="Weight factor for progress reward")
     w_theta: float = Field(default=1.0, description="Weight factor for alignment reward")
+    goal_x: float = Field(default=520.0, description="Target goal x coordinate")
+    goal_y: float = Field(default=200.0, description="Target goal y coordinate")
 
 
 class StepResponse(BaseModel):
@@ -204,7 +206,7 @@ def step(request: StepRequest) -> StepResponse:
     angular_velocity = ANGULAR_VELOCITIES[request.action]
     linear_velocity = LINEAR_VELOCITY
     
-    dist_to_goal = compute_distance(request.x, request.y, GOAL_X, GOAL_Y)
+    dist_to_goal = compute_distance(request.x, request.y, request.goal_x, request.goal_y)
     if dist_to_goal < LINEAR_VELOCITY * TIME_STEP:
         linear_velocity = dist_to_goal / TIME_STEP
 
@@ -214,8 +216,8 @@ def step(request: StepRequest) -> StepResponse:
     new_y = request.y + linear_velocity * math.sin(new_theta) * TIME_STEP
 
     # 3. Compute new distance to goal and heading error.
-    current_distance = compute_distance(new_x, new_y, GOAL_X, GOAL_Y)
-    theta_error = compute_theta_error(new_x, new_y, new_theta, GOAL_X, GOAL_Y)
+    current_distance = compute_distance(new_x, new_y, request.goal_x, request.goal_y)
+    theta_error = compute_theta_error(new_x, new_y, new_theta, request.goal_x, request.goal_y)
 
     # 4. Base reward.
     r_d, r_theta, reward = compute_reward(

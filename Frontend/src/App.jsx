@@ -118,12 +118,12 @@ function normalizeAngle(angle) {
   return Math.atan2(Math.sin(angle), Math.cos(angle));
 }
 
-function bearingToGoal(x, y) {
-  return Math.atan2(GOAL.y - y, GOAL.x - x);
+function bearingToGoal(x, y, goal = GOAL) {
+  return Math.atan2(goal.y - y, goal.x - x);
 }
 
-function selectGreedyAction(x, y, theta) {
-  const desiredTheta = bearingToGoal(x, y);
+function selectGreedyAction(x, y, theta, goal = GOAL) {
+  const desiredTheta = bearingToGoal(x, y, goal);
   const headingError = normalizeAngle(desiredTheta - theta);
 
   let bestAction = 2; 
@@ -141,7 +141,7 @@ function selectGreedyAction(x, y, theta) {
   return { action: bestAction, headingError };
 }
 
-function selectLookaheadAction(x, y, theta, obstaclesList) {
+function selectLookaheadAction(x, y, theta, obstaclesList, goal = GOAL) {
   const V = 15.0;
   const ACTIONS_SUBSEQUENT = [0, 2, 4];
 
@@ -168,12 +168,12 @@ function selectLookaheadAction(x, y, theta, obstaclesList) {
     if (checkCollision(px, py)) return { score: -1000 + depth, path: [] };
     
     // BUG FIX: Stop searching and return goal-reached bonus if robot hits the goal in lookahead steps
-    if (Math.hypot(GOAL.x - px, GOAL.y - py) < GOAL_THRESHOLD) {
+    if (Math.hypot(goal.x - px, goal.y - py) < GOAL_THRESHOLD) {
       return { score: 5000 - depth, path: [] };
     }
     
     if (depth === maxDepth) {
-      const dist = Math.hypot(GOAL.x - px, GOAL.y - py);
+      const dist = Math.hypot(goal.x - px, goal.y - py);
       return { score: 1000 - dist, path: [] };
     }
     
@@ -201,7 +201,7 @@ function selectLookaheadAction(x, y, theta, obstaclesList) {
 
   const result = findBestPath(x, y, theta, 0, 8);
   const chosenAction = result.path[0] !== undefined ? result.path[0] : 2;
-  const desiredTheta = bearingToGoal(x, y);
+  const desiredTheta = bearingToGoal(x, y, goal);
   const headingError = normalizeAngle(desiredTheta - theta);
   return { action: chosenAction, headingError };
 }
@@ -282,10 +282,10 @@ function astarPath(startX, startY, goalX, goalY, obstaclesList) {
 }
 
 // BUG FIX: Dynamic A* Path Planner to prevent starting circling loops
-function selectAStarAction(x, y, theta, obstaclesList) {
-  const path = astarPath(x, y, GOAL.x, GOAL.y, obstaclesList);
+function selectAStarAction(x, y, theta, obstaclesList, goal = GOAL) {
+  const path = astarPath(x, y, goal.x, goal.y, obstaclesList);
   if (!path || path.length < 2) {
-    return selectGreedyAction(x, y, theta);
+    return selectGreedyAction(x, y, theta, goal);
   }
   // Next node along path is path[1] (path[0] is start node)
   const target = path[1];
@@ -307,10 +307,10 @@ function selectAStarAction(x, y, theta, obstaclesList) {
   return { action: bestAction, headingError };
 }
 
-function selectBaselineAction(x, y, theta, obstaclesList) {
+function selectBaselineAction(x, y, theta, obstaclesList, goal = GOAL) {
   if (Math.random() < 0.12) {
     const randomAction = Math.floor(Math.random() * 5);
-    const desiredTheta = bearingToGoal(x, y);
+    const desiredTheta = bearingToGoal(x, y, goal);
     const headingError = normalizeAngle(desiredTheta - theta);
     return { action: randomAction, headingError };
   }
@@ -340,7 +340,7 @@ function selectBaselineAction(x, y, theta, obstaclesList) {
   function findBestPath(px, py, ptheta, depth, maxDepth) {
     if (checkCollision(px, py)) return { score: -500 + depth, path: [] };
     if (depth === maxDepth) {
-      const dist = Math.hypot(GOAL.x - px, GOAL.y - py);
+      const dist = Math.hypot(goal.x - px, goal.y - py);
       return { score: 500 - dist, path: [] };
     }
     
@@ -363,7 +363,7 @@ function selectBaselineAction(x, y, theta, obstaclesList) {
   
   const result = findBestPath(x, y, theta, 0, 2);
   const chosenAction = result.path[0] !== undefined ? result.path[0] : 2;
-  const desiredTheta = bearingToGoal(x, y);
+  const desiredTheta = bearingToGoal(x, y, goal);
   const headingError = normalizeAngle(desiredTheta - theta);
   return { action: chosenAction, headingError };
 }
@@ -403,6 +403,9 @@ export default function App() {
   const [obstacleSpeed, setObstacleSpeed] = useState(4);
   const [wD, setWD] = useState(1.0);
   const [wTheta, setWTheta] = useState(1.0);
+  const [movingGoal, setMovingGoal] = useState(false);
+  const [goalPos, setGoalPos] = useState({ x: 520, y: 200 });
+  const [sessionLogs, setSessionLogs] = useState([]);
 
   // Shared simulation state
   const [isRunning, setIsRunning] = useState(false);
@@ -423,13 +426,33 @@ export default function App() {
   const [robots, setRobots] = useState([]);
   const [robotsB, setRobotsB] = useState([]);
 
+  // Canvas Refs
+  const canvasRef = useRef(null);
+  const canvasRefB = useRef(null);
+  const intervalRef = useRef(null);
+  const trainingIntervalRef = useRef(null);
+
+  // Refs for inside callback
+  const robotsRef = useRef(robots);
+  const robotsBRef = useRef(robotsB);
+  const obstaclesRef = useRef(obstacles);
+  const policyModeRef = useRef(policyMode);
+  const goalRewardRef = useRef(goalReward);
+  const collisionPenaltyRef = useRef(collisionPenalty);
+  const movingObstaclesRef = useRef(movingObstacles);
+  const obstacleSpeedRef = useRef(obstacleSpeed);
+  const wDRef = useRef(wD);
+  const wThetaRef = useRef(wTheta);
+  const movingGoalRef = useRef(movingGoal);
+  const goalPosRef = useRef(goalPos);
+
   // Initialize robot state lists
   const initializeRobots = useCallback(() => {
     const list = [];
     const listB = [];
     for (let i = 0; i < numRobots; i++) {
       const start = startPositions[i] || DEFAULT_START_POSITIONS[i];
-      const dist = distanceTo(start.x, start.y, GOAL);
+      const dist = distanceTo(start.x, start.y, goalPosRef.current);
       
       const newRobotObj = {
         x: start.x,
@@ -440,6 +463,8 @@ export default function App() {
         stepCount: 0,
         lastReward: 0,
         cumulativeReward: 0,
+        jerk: 0,
+        lastOmega: 0,
         pathHistory: [],
         rewardHistory: [],
         liveRewardDetails: {
@@ -471,23 +496,7 @@ export default function App() {
     episodes: [], d3qnRewards: [], dqnRewards: [], d3qnSuccess: [], dqnSuccess: [], d3qnSteps: [], dqnSteps: [], d3qnQVals: [], dqnQVals: [], actualReturn: []
   });
 
-  // Canvas Refs
-  const canvasRef = useRef(null);
-  const canvasRefB = useRef(null);
-  const intervalRef = useRef(null);
-  const trainingIntervalRef = useRef(null);
 
-  // Refs for inside callback
-  const robotsRef = useRef(robots);
-  const robotsBRef = useRef(robotsB);
-  const obstaclesRef = useRef(obstacles);
-  const policyModeRef = useRef(policyMode);
-  const goalRewardRef = useRef(goalReward);
-  const collisionPenaltyRef = useRef(collisionPenalty);
-  const movingObstaclesRef = useRef(movingObstacles);
-  const obstacleSpeedRef = useRef(obstacleSpeed);
-  const wDRef = useRef(wD);
-  const wThetaRef = useRef(wTheta);
 
   useEffect(() => { robotsRef.current = robots; }, [robots]);
   useEffect(() => { robotsBRef.current = robotsB; }, [robotsB]);
@@ -499,6 +508,8 @@ export default function App() {
   useEffect(() => { obstacleSpeedRef.current = obstacleSpeed; }, [obstacleSpeed]);
   useEffect(() => { wDRef.current = wD; }, [wD]);
   useEffect(() => { wThetaRef.current = wTheta; }, [wTheta]);
+  useEffect(() => { movingGoalRef.current = movingGoal; }, [movingGoal]);
+  useEffect(() => { goalPosRef.current = goalPos; }, [goalPos]);
 
   // Apply layout presets
   const handleApplyPreset = (name) => {
@@ -580,7 +591,7 @@ export default function App() {
 
     // Draw Goal
     ctx.beginPath();
-    ctx.arc(GOAL.x, GOAL.y, GOAL_RADIUS, 0, Math.PI * 2);
+    ctx.arc(goalPos.x, goalPos.y, GOAL_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = COLORS.goal;
     ctx.fill();
     ctx.strokeStyle = "rgba(79, 214, 122, 0.35)";
@@ -662,7 +673,7 @@ export default function App() {
       ctx.fillText(`R${rIdx + 1}`, robotState.x - 6, robotState.y - 14);
     });
 
-  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent]);
+  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos, lidarRays]);
 
   // Redraw on state shifts
   useEffect(() => {
@@ -824,7 +835,16 @@ export default function App() {
       }
     ]);
 
-    // 1. Move obstacles if enabled
+    // 1. Update Goal Target Position if enabled (Sine-wave vertical movement)
+    let currentGoal = goalPosRef.current;
+    if (movingGoalRef.current) {
+      const step = activeRobots[0] ? activeRobots[0].stepCount + 1 : 1;
+      const goalY = 200 + 90 * Math.sin(step * 0.15);
+      currentGoal = { x: 520, y: goalY };
+      setGoalPos(currentGoal);
+    }
+
+    // 2. Move obstacles if enabled
     let currentObstacles = obstaclesRef.current;
     if (movingObstaclesRef.current) {
       currentObstacles = currentObstacles.map(obs => {
@@ -873,12 +893,12 @@ export default function App() {
         return Promise.resolve(null);
       }
 
-      // Apply A* or Lookahead or Greedy steering using currentObstacles
+      // Apply A* or Lookahead or Greedy steering using currentObstacles and currentGoal
       const actionObj = policyModeRef.current === "lookahead"
-        ? selectLookaheadAction(r.x, r.y, r.theta, currentObstacles)
+        ? selectLookaheadAction(r.x, r.y, r.theta, currentObstacles, currentGoal)
         : policyModeRef.current === "astar" 
-        ? selectAStarAction(r.x, r.y, r.theta, currentObstacles)
-        : selectGreedyAction(r.x, r.y, r.theta);
+        ? selectAStarAction(r.x, r.y, r.theta, currentObstacles, currentGoal)
+        : selectGreedyAction(r.x, r.y, r.theta, currentGoal);
 
       return fetch(API_URL, {
         method: "POST",
@@ -888,7 +908,7 @@ export default function App() {
           y: r.y,
           theta: r.theta,
           prev_distance: r.prevDistance,
-          initial_distance: Math.hypot(GOAL.x - startPositions[index].x, GOAL.y - startPositions[index].y),
+          initial_distance: Math.hypot(currentGoal.x - startPositions[index].x, currentGoal.y - startPositions[index].y),
           step_count: r.stepCount,
           action: actionObj.action,
           obstacles: currentObstacles,
@@ -896,9 +916,11 @@ export default function App() {
           goal_reward: goalRewardRef.current,
           collision_reward: collisionPenaltyRef.current,
           w_d: wDRef.current,
-          w_theta: wThetaRef.current
+          w_theta: wThetaRef.current,
+          goal_x: currentGoal.x,
+          goal_y: currentGoal.y
         }),
-      }).then(res => res.json()).then(data => ({ index, data }));
+      }).then(res => res.json()).then(data => ({ index, data, action: actionObj.action }));
     });
 
     // Construct promises for active baseline DQN robots
@@ -907,7 +929,7 @@ export default function App() {
         return Promise.resolve(null);
       }
 
-      const actionObjB = selectBaselineAction(r.x, r.y, r.theta, currentObstacles);
+      const actionObjB = selectBaselineAction(r.x, r.y, r.theta, currentObstacles, currentGoal);
 
       return fetch(API_URL, {
         method: "POST",
@@ -917,7 +939,7 @@ export default function App() {
           y: r.y,
           theta: r.theta,
           prev_distance: r.prevDistance,
-          initial_distance: Math.hypot(GOAL.x - startPositions[index].x, GOAL.y - startPositions[index].y),
+          initial_distance: Math.hypot(currentGoal.x - startPositions[index].x, currentGoal.y - startPositions[index].y),
           step_count: r.stepCount,
           action: actionObjB.action,
           obstacles: currentObstacles,
@@ -925,9 +947,11 @@ export default function App() {
           goal_reward: goalRewardRef.current,
           collision_reward: collisionPenaltyRef.current,
           w_d: wDRef.current,
-          w_theta: wThetaRef.current
+          w_theta: wThetaRef.current,
+          goal_x: currentGoal.x,
+          goal_y: currentGoal.y
         }),
-      }).then(res => res.json()).then(data => ({ index, data }));
+      }).then(res => res.json()).then(data => ({ index, data, action: actionObjB.action }));
     });
 
     try {
@@ -936,100 +960,124 @@ export default function App() {
         Promise.all(baselinePromises)
       ]);
 
+      let nextAdvanced = [...activeRobots];
+      let nextBaseline = [...activeRobotsB];
+
       // Update D3QN robots
-      setRobots(prevList => {
-        const nextList = [...prevList];
-        resList.forEach(res => {
-          if (!res) return;
-          const { index, data } = res;
-          const current = nextList[index];
+      resList.forEach(res => {
+        if (!res) return;
+        const { index, data, action } = res;
+        const current = nextAdvanced[index];
 
-          const desiredTheta = bearingToGoal(data.x, data.y);
-          const thetaErr = normalizeAngle(desiredTheta - data.theta);
-          const rThetaVal = data.r_theta;
-          const rDVal = data.r_d;
-          const baseRew = rDVal * rThetaVal;
-          let bonusVal = 0;
-          if (data.status === "goal_reached") bonusVal = goalRewardRef.current;
-          if (data.status === "collision") bonusVal = collisionPenaltyRef.current;
+        const desiredTheta = bearingToGoal(data.x, data.y, currentGoal);
+        const thetaErr = normalizeAngle(desiredTheta - data.theta);
+        const rThetaVal = data.r_theta;
+        const rDVal = data.r_d;
+        const baseRew = rDVal * rThetaVal;
+        let bonusVal = 0;
+        if (data.status === "goal_reached") bonusVal = goalRewardRef.current;
+        if (data.status === "collision") bonusVal = collisionPenaltyRef.current;
 
-          nextList[index] = {
-            ...current,
-            x: data.x,
-            y: data.y,
-            theta: data.theta,
-            prevDistance: data.distance,
-            status: data.status,
-            stepCount: current.stepCount + 1,
-            lastReward: data.reward,
-            cumulativeReward: current.cumulativeReward + data.reward,
-            pathHistory: [...current.pathHistory, { x: current.x, y: current.y }],
-            rewardHistory: [...current.rewardHistory, data.reward].slice(-100),
-            liveRewardDetails: {
-              dPrev: current.prevDistance,
-              dCurr: data.distance,
-              thetaError: thetaErr,
-              rTheta: rThetaVal,
-              rD: rDVal,
-              baseReward: baseRew,
-              bonus: bonusVal,
-              totalReward: data.reward,
-            }
-          };
-        });
-        return nextList;
+        const omega = ANGULAR_VELOCITIES[action];
+        const deltaOmega = Math.abs(omega - current.lastOmega);
+        const nextJerk = current.jerk + deltaOmega;
+
+        nextAdvanced[index] = {
+          ...current,
+          x: data.x,
+          y: data.y,
+          theta: data.theta,
+          prevDistance: data.distance,
+          status: data.status,
+          stepCount: current.stepCount + 1,
+          lastReward: data.reward,
+          cumulativeReward: current.cumulativeReward + data.reward,
+          jerk: nextJerk,
+          lastOmega: omega,
+          pathHistory: [...current.pathHistory, { x: current.x, y: current.y }],
+          rewardHistory: [...current.rewardHistory, data.reward].slice(-100),
+          liveRewardDetails: {
+            dPrev: current.prevDistance,
+            dCurr: data.distance,
+            thetaError: thetaErr,
+            rTheta: rThetaVal,
+            rD: rDVal,
+            baseReward: baseRew,
+            bonus: bonusVal,
+            totalReward: data.reward,
+          }
+        };
       });
 
       // Update Baseline robots
-      setRobotsB(prevList => {
-        const nextList = [...prevList];
-        resListB.forEach(res => {
-          if (!res) return;
-          const { index, data } = res;
-          const current = nextList[index];
+      resListB.forEach(res => {
+        if (!res) return;
+        const { index, data, action } = res;
+        const current = nextBaseline[index];
 
-          const desiredTheta = bearingToGoal(data.x, data.y);
-          const thetaErr = normalizeAngle(desiredTheta - data.theta);
-          const rThetaVal = data.r_theta;
-          const rDVal = data.r_d;
-          const baseRew = rDVal + rThetaVal - 2.0;
-          let bonusVal = 0;
-          if (data.status === "goal_reached") bonusVal = goalRewardRef.current;
-          if (data.status === "collision") bonusVal = collisionPenaltyRef.current;
+        const desiredTheta = bearingToGoal(data.x, data.y, currentGoal);
+        const thetaErr = normalizeAngle(desiredTheta - data.theta);
+        const rThetaVal = data.r_theta;
+        const rDVal = data.r_d;
+        const baseRew = rDVal + rThetaVal - 2.0;
+        let bonusVal = 0;
+        if (data.status === "goal_reached") bonusVal = goalRewardRef.current;
+        if (data.status === "collision") bonusVal = collisionPenaltyRef.current;
 
-          nextList[index] = {
-            ...current,
-            x: data.x,
-            y: data.y,
-            theta: data.theta,
-            prevDistance: data.distance,
-            status: data.status,
-            stepCount: current.stepCount + 1,
-            lastReward: data.reward,
-            cumulativeReward: current.cumulativeReward + data.reward,
-            pathHistory: [...current.pathHistory, { x: current.x, y: current.y }],
-            rewardHistory: [...current.rewardHistory, data.reward].slice(-100),
-            liveRewardDetails: {
-              dPrev: current.prevDistance,
-              dCurr: data.distance,
-              thetaError: thetaErr,
-              rTheta: rThetaVal,
-              rD: rDVal,
-              baseReward: baseRew,
-              bonus: bonusVal,
-              totalReward: data.reward,
-            }
-          };
-        });
-        return nextList;
+        const omega = ANGULAR_VELOCITIES[action];
+        const deltaOmega = Math.abs(omega - current.lastOmega);
+        const nextJerk = current.jerk + deltaOmega;
+
+        nextBaseline[index] = {
+          ...current,
+          x: data.x,
+          y: data.y,
+          theta: data.theta,
+          prevDistance: data.distance,
+          status: data.status,
+          stepCount: current.stepCount + 1,
+          lastReward: data.reward,
+          cumulativeReward: current.cumulativeReward + data.reward,
+          jerk: nextJerk,
+          lastOmega: omega,
+          pathHistory: [...current.pathHistory, { x: current.x, y: current.y }],
+          rewardHistory: [...current.rewardHistory, data.reward].slice(-100),
+          liveRewardDetails: {
+            dPrev: current.prevDistance,
+            dCurr: data.distance,
+            thetaError: thetaErr,
+            rTheta: rThetaVal,
+            rD: rDVal,
+            baseReward: baseRew,
+            bonus: bonusVal,
+            totalReward: data.reward,
+          }
+        };
       });
+
+      setRobots(nextAdvanced);
+      setRobotsB(nextBaseline);
+
+      // Check if all robots are finished under the next step
+      const D3QNDone = nextAdvanced.every(r => r.status === "goal_reached" || r.status === "collision");
+      const DQNDone = nextBaseline.every(r => r.status === "goal_reached" || r.status === "collision");
+      if (D3QNDone && DQNDone) {
+        const newLog = {
+          id: Date.now(),
+          timestamp: new Date().toLocaleTimeString(),
+          layout: presetName,
+          advStats: nextAdvanced.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk })),
+          baseStats: nextBaseline.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk }))
+        };
+        setSessionLogs(prev => [newLog, ...prev]);
+      }
 
       setErrorMsg(null);
     } catch (err) {
       setErrorMsg(err.message || "Failed to reach simulation backend.");
       setIsRunning(false);
     }
-  }, [startPositions]);
+  }, [startPositions, presetName]);
 
   // Step backward navigation logic
   const handlePrevStep = () => {
@@ -1086,8 +1134,8 @@ export default function App() {
   const isNearStartOrGoal = (rect) => {
     const pad = 45;
     const startRangeX = [50 - pad, 50 + pad];
-    const goalRangeX = [GOAL.x - pad, GOAL.x + pad];
-    const goalRangeY = [GOAL.y - pad, GOAL.y + pad];
+    const goalRangeX = [goalPos.x - pad, goalPos.x + pad];
+    const goalRangeY = [goalPos.y - pad, goalPos.y + pad];
 
     const intersectStart = rect.x < startRangeX[1] && rect.x + rect.width > startRangeX[0];
     const intersectGoal = rect.x < goalRangeX[1] && rect.x + rect.width > goalRangeX[0] &&
@@ -1675,9 +1723,24 @@ export default function App() {
                         value={obstacleSpeed}
                         onChange={(e) => setObstacleSpeed(Number(e.target.value))}
                         className="w-full accent-amber-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                      />
-                    </div>
-                  )}
+                    />
+                  </div>
+                )}
+
+                  <div className="flex items-center justify-between pt-2 border-t border-gray-850">
+                    <span className="text-gray-400">Moving Target (Goal):</span>
+                    <input
+                      type="checkbox"
+                      checked={movingGoal}
+                      onChange={(e) => {
+                        setMovingGoal(e.target.checked);
+                        if (!e.target.checked) {
+                          setGoalPos({ x: 520, y: 200 });
+                        }
+                      }}
+                      className="w-4 h-4 cursor-pointer accent-emerald-500 rounded"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1825,12 +1888,17 @@ export default function App() {
                       <td className="py-2.5 text-right text-pink-400 font-bold">{robotSelectedB.cumulativeReward?.toFixed(2)}</td>
                     </tr>
                     <tr>
+                      <td className="py-2.5 text-gray-400">Trajectory Jerk (Steer)</td>
+                      <td className="py-2.5 text-right text-cyan-400 font-bold">{robotSelected.jerk?.toFixed(2)} rad</td>
+                      <td className="py-2.5 text-right text-pink-400 font-bold">{robotSelectedB.jerk?.toFixed(2)} rad</td>
+                    </tr>
+                    <tr>
                       <td className="py-2.5 text-gray-400">Path Efficiency</td>
                       <td className="py-2.5 text-right text-emerald-400 font-semibold">
-                        {(robotSelected.stepCount > 0 ? (Math.hypot(GOAL.x - startPositions[selectedRobotIndex].x, GOAL.y - startPositions[selectedRobotIndex].y) / robotSelected.stepCount) : 0).toFixed(3)}
+                        {(robotSelected.stepCount > 0 ? (Math.hypot(goalPos.x - startPositions[selectedRobotIndex].x, goalPos.y - startPositions[selectedRobotIndex].y) / robotSelected.stepCount) : 0).toFixed(3)}
                       </td>
                       <td className="py-2.5 text-right text-orange-400 font-semibold">
-                        {(robotSelectedB.stepCount > 0 ? (Math.hypot(GOAL.x - startPositions[selectedRobotIndex].x, GOAL.y - startPositions[selectedRobotIndex].y) / robotSelectedB.stepCount) : 0).toFixed(3)}
+                        {(robotSelectedB.stepCount > 0 ? (Math.hypot(goalPos.x - startPositions[selectedRobotIndex].x, goalPos.y - startPositions[selectedRobotIndex].y) / robotSelectedB.stepCount) : 0).toFixed(3)}
                       </td>
                     </tr>
                   </tbody>
@@ -1968,6 +2036,73 @@ export default function App() {
                 </div>
               </div>
 
+            </div>
+
+            {/* Session Run History Logs Table */}
+            <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4 mt-6">
+              <div className="flex justify-between items-center border-b border-gray-800 pb-2">
+                <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold">
+                  4. Session Run History Logs (Completed Runs)
+                </h3>
+                <button
+                  onClick={() => setSessionLogs([])}
+                  className="px-2 py-1 text-[10px] uppercase font-bold tracking-wider rounded border border-red-900 bg-red-950/20 text-red-400 hover:bg-red-900/30 transition-all cursor-pointer"
+                >
+                  Clear Logs
+                </button>
+              </div>
+
+              {sessionLogs.length === 0 ? (
+                <div className="py-8 text-center text-xs text-gray-500 font-mono">
+                  No completed runs recorded in this session. Run the simulation to completion (all robots reach target or collide) to log metrics.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs font-mono text-left">
+                    <thead>
+                      <tr className="text-gray-500 border-b border-gray-850">
+                        <th className="pb-2 font-normal">Timestamp</th>
+                        <th className="pb-2 font-normal">Layout</th>
+                        <th className="pb-2 font-normal">Robot</th>
+                        <th className="pb-2 font-normal text-right">Steps (D3QN / DQN)</th>
+                        <th className="pb-2 font-normal text-right">Return (D3QN / DQN)</th>
+                        <th className="pb-2 font-normal text-right">Steer Jerk (D3QN / DQN)</th>
+                        <th className="pb-2 font-normal text-right">Status (D3QN / DQN)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-850">
+                      {sessionLogs.map((log) => (
+                        <React.Fragment key={log.id}>
+                          {log.advStats.map((adv, idx) => {
+                            const base = log.baseStats[idx];
+                            return (
+                              <tr key={`${log.id}-${idx}`} className="hover:bg-gray-900/20">
+                                <td className="py-2.5 text-gray-500">{log.timestamp}</td>
+                                <td className="py-2.5 text-gray-300 capitalize">{log.layout}</td>
+                                <td className="py-2.5 text-gray-400">R{idx + 1}</td>
+                                <td className="py-2.5 text-right font-semibold text-cyan-400">
+                                  {adv.steps} <span className="text-gray-600">/</span> <span className="text-pink-400">{base?.steps}</span>
+                                </td>
+                                <td className="py-2.5 text-right font-semibold text-cyan-400">
+                                  {adv.reward.toFixed(1)} <span className="text-gray-600">/</span> <span className="text-pink-400">{base?.reward.toFixed(1)}</span>
+                                </td>
+                                <td className="py-2.5 text-right font-semibold text-cyan-400">
+                                  {adv.jerk.toFixed(1)} <span className="text-gray-600">/</span> <span className="text-pink-400">{base?.jerk.toFixed(1)}</span>
+                                </td>
+                                <td className="py-2.5 text-right">
+                                  <span style={{ color: statusDisplay(adv.status).color }}>{statusDisplay(adv.status).label}</span>
+                                  {" "}<span className="text-gray-600">/</span>{" "}
+                                  <span style={{ color: statusDisplay(base?.status).color }}>{statusDisplay(base?.status).label}</span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </React.Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
 
           </div>

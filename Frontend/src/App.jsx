@@ -19,7 +19,7 @@ import LandingPage from "./LandingPage.jsx";
 // Constants — must stay in sync with the FastAPI backend (main.py)
 // --------------------------------------------------------------------------
 
-const API_URL = "http://localhost:8000/step";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/step";
 const STEP_INTERVAL_MS = 100;
 
 const CANVAS_WIDTH = 600;

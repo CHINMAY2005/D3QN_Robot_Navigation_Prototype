@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { Line } from "react-chartjs-2";
+import { Line, Scatter } from "react-chartjs-2";
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -429,6 +429,7 @@ export default function App() {
     { x: 360, y: 180, width: 30, height: 180 }
   ]);
   const [isDrawingMode, setIsDrawingMode] = useState(false);
+  const [showPotentialField, setShowPotentialField] = useState(false);
   const [drawingStart, setDrawingStart] = useState(null);
   const [drawingCurrent, setDrawingCurrent] = useState(null);
 
@@ -624,6 +625,73 @@ export default function App() {
       ctx.stroke();
     }
 
+    // Live Policy Potential Field Flow
+    if (showPotentialField) {
+      ctx.strokeStyle = "rgba(0, 242, 254, 0.12)";
+      ctx.lineWidth = 1.0;
+      for (let x = 20; x < CANVAS_WIDTH; x += 30) {
+        for (let y = 20; y < CANVAS_HEIGHT; y += 30) {
+          // Check if coordinate is inside any obstacle
+          let inside = false;
+          for (let i = 0; i < obstacles.length; i++) {
+            const obs = obstacles[i];
+            if (x >= obs.x && x <= obs.x + obs.width && y >= obs.y && y <= obs.y + obs.height) {
+              inside = true;
+              break;
+            }
+          }
+          if (inside) continue;
+
+          // 1. Attraction to goal
+          const dxG = goalPos.x - x;
+          const dyG = goalPos.y - y;
+          const distG = Math.hypot(dxG, dyG);
+          let forceX = distG > 0 ? (dxG / distG) * 1.5 : 0;
+          let forceY = distG > 0 ? (dyG / distG) * 1.5 : 0;
+
+          // 2. Repulsion from obstacles
+          obstacles.forEach((obs) => {
+            const cx = Math.max(obs.x, Math.min(x, obs.x + obs.width));
+            const cy = Math.max(obs.y, Math.min(y, obs.y + obs.height));
+            const dxO = x - cx;
+            const dyO = y - cy;
+            const distO = Math.hypot(dxO, dyO);
+
+            const influence = 80;
+            if (distO < influence && distO > 0) {
+              const strength = ((influence - distO) / distO) * 2.2;
+              forceX += (dxO / distO) * strength;
+              forceY += (dyO / distO) * strength + (dyO >= 0 ? 0.3 : -0.3) * strength;
+            }
+          });
+
+          // Normalize net force
+          const net = Math.hypot(forceX, forceY);
+          if (net > 0) {
+            const dx = forceX / net;
+            const dy = forceY / net;
+            const arrowLen = 9;
+            const endX = x + dx * arrowLen;
+            const endY = y + dy * arrowLen;
+
+            // Draw line
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(endX, endY);
+            ctx.stroke();
+
+            // Draw arrowhead
+            const angle = Math.atan2(forceY, forceX);
+            ctx.beginPath();
+            ctx.moveTo(endX - 3.5 * Math.cos(angle - Math.PI / 6), endY - 3.5 * Math.sin(angle - Math.PI / 6));
+            ctx.lineTo(endX, endY);
+            ctx.lineTo(endX - 3.5 * Math.cos(angle + Math.PI / 6), endY - 3.5 * Math.sin(angle + Math.PI / 6));
+            ctx.stroke();
+          }
+        }
+      }
+    }
+
     // Draw Obstacles
     obstacles.forEach((obs) => {
       ctx.fillStyle = "rgba(240, 84, 107, 0.22)";
@@ -777,7 +845,7 @@ export default function App() {
       ctx.fillText(`R${rIdx + 1}`, robotState.x - 6, robotState.y - 14);
     });
 
-  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos, lidarRays]);
+  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos, lidarRays, showPotentialField]);
 
   // Redraw on state shifts
   useEffect(() => {
@@ -785,7 +853,7 @@ export default function App() {
       drawScene(canvasRef.current, robots, COLORS.robot);
       drawScene(canvasRefB.current, robotsB, COLORS.robotB);
     }
-  }, [robots, robotsB, obstacles, drawScene, activeTab, viewMode]);
+  }, [robots, robotsB, obstacles, drawScene, activeTab, viewMode, showPotentialField]);
 
   // Drag and Drop coordinates mapping
   const getCanvasMousePos = (e, canvas) => {
@@ -1471,6 +1539,61 @@ export default function App() {
     }
   };
 
+  const paretoScatterData = {
+    datasets: [
+      {
+        label: "Advanced D3QN",
+        data: sessionLogs.flatMap(log => 
+          log.advStats.map(stat => ({ x: stat.steps, y: stat.jerk }))
+        ),
+        backgroundColor: COLORS.robot,
+        borderColor: COLORS.robot,
+        pointRadius: 6,
+        pointHoverRadius: 8,
+      },
+      {
+        label: "Baseline DQN",
+        data: sessionLogs.flatMap(log => 
+          log.baseStats.map(stat => ({ x: stat.steps, y: stat.jerk }))
+        ),
+        backgroundColor: COLORS.robotB,
+        borderColor: COLORS.robotB,
+        pointRadius: 6,
+        pointHoverRadius: 8,
+      }
+    ]
+  };
+
+  const paretoChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: true, labels: { color: COLORS.textDim, boxWidth: 10, font: { size: 10 } } },
+      tooltip: {
+        backgroundColor: COLORS.panel,
+        titleColor: COLORS.textDim,
+        bodyColor: COLORS.textPrimary,
+        borderColor: COLORS.panelBorder,
+        borderWidth: 1,
+        callbacks: {
+          label: (context) => `Steps: ${context.parsed.x}, Jerk: ${context.parsed.y.toFixed(1)} rad`
+        }
+      }
+    },
+    scales: {
+      x: { 
+        title: { display: true, text: "Path Steps", color: COLORS.textDim, font: { size: 10 } },
+        ticks: { color: COLORS.textDim }, 
+        grid: { color: COLORS.grid } 
+      },
+      y: { 
+        title: { display: true, text: "Steering Jerk (rad)", color: COLORS.textDim, font: { size: 10 } },
+        ticks: { color: COLORS.textDim }, 
+        grid: { color: COLORS.grid } 
+      }
+    }
+  };
+
   const statusDisplay = (stat) => {
     const mapping = {
       idle: { label: "STANDBY", color: COLORS.textDim },
@@ -1815,6 +1938,16 @@ export default function App() {
                       checked={showAStarPath}
                       onChange={(e) => setShowAStarPath(e.target.checked)}
                       className="w-4 h-4 cursor-pointer accent-indigo-500 rounded"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-gray-400">Show Vector Field Flow:</span>
+                    <input
+                      type="checkbox"
+                      checked={showPotentialField}
+                      onChange={(e) => setShowPotentialField(e.target.checked)}
+                      className="w-4 h-4 cursor-pointer accent-cyan-400 rounded"
                     />
                   </div>
 
@@ -2257,71 +2390,97 @@ export default function App() {
 
             </div>
 
-            {/* Session Run History Logs Table */}
-            <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4 mt-6">
-              <div className="flex justify-between items-center border-b border-gray-800 pb-2">
-                <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold">
-                  4. Session Run History Logs (Completed Runs)
-                </h3>
-                <button
-                  onClick={() => setSessionLogs([])}
-                  className="px-2 py-1 text-[10px] uppercase font-bold tracking-wider rounded border border-red-900 bg-red-950/20 text-red-400 hover:bg-red-900/30 transition-all cursor-pointer"
-                >
-                  Clear Logs
-                </button>
+            {/* Session Logs & Pareto Plot Split Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-6">
+              
+              {/* Session Run History Logs Table */}
+              <div className="lg:col-span-8 p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
+                <div className="flex justify-between items-center border-b border-gray-800 pb-2">
+                  <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold">
+                    4. Session Run History Logs (Completed Runs)
+                  </h3>
+                  <button
+                    onClick={() => setSessionLogs([])}
+                    className="px-2 py-1 text-[10px] uppercase font-bold tracking-wider rounded border border-red-900 bg-red-950/20 text-red-400 hover:bg-red-900/30 transition-all cursor-pointer"
+                  >
+                    Clear Logs
+                  </button>
+                </div>
+
+                {sessionLogs.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-gray-500 font-mono">
+                    No completed runs recorded in this session. Run the simulation to completion (all robots reach target or collide) to log metrics.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs font-mono text-left">
+                      <thead>
+                        <tr className="text-gray-500 border-b border-gray-850">
+                          <th className="pb-2 font-normal">Timestamp</th>
+                          <th className="pb-2 font-normal">Layout</th>
+                          <th className="pb-2 font-normal">Robot</th>
+                          <th className="pb-2 font-normal text-right">Steps (D3QN / DQN)</th>
+                          <th className="pb-2 font-normal text-right">Return (D3QN / DQN)</th>
+                          <th className="pb-2 font-normal text-right">Steer Jerk (D3QN / DQN)</th>
+                          <th className="pb-2 font-normal text-right">Status (D3QN / DQN)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-850">
+                        {sessionLogs.map((log) => (
+                          <React.Fragment key={log.id}>
+                            {log.advStats.map((adv, idx) => {
+                              const base = log.baseStats[idx];
+                              return (
+                                <tr key={`${log.id}-${idx}`} className="hover:bg-gray-900/20">
+                                  <td className="py-2.5 text-gray-500">{log.timestamp}</td>
+                                  <td className="py-2.5 text-gray-300 capitalize">{log.layout}</td>
+                                  <td className="py-2.5 text-gray-400">R{idx + 1}</td>
+                                  <td className="py-2.5 text-right font-semibold text-cyan-400">
+                                    {adv.steps} <span className="text-gray-600">/</span> <span className="text-pink-400">{base?.steps}</span>
+                                  </td>
+                                  <td className="py-2.5 text-right font-semibold text-cyan-400">
+                                    {adv.reward.toFixed(1)} <span className="text-gray-600">/</span> <span className="text-pink-400">{base?.reward.toFixed(1)}</span>
+                                  </td>
+                                  <td className="py-2.5 text-right font-semibold text-cyan-400">
+                                    {adv.jerk.toFixed(1)} <span className="text-gray-600">/</span> <span className="text-pink-400">{base?.jerk.toFixed(1)}</span>
+                                  </td>
+                                  <td className="py-2.5 text-right">
+                                    <span style={{ color: statusDisplay(adv.status).color }}>{statusDisplay(adv.status).label}</span>
+                                    {" "}<span className="text-gray-600">/</span>{" "}
+                                    <span style={{ color: statusDisplay(base?.status).color }}>{statusDisplay(base?.status).label}</span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </React.Fragment>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
 
-              {sessionLogs.length === 0 ? (
-                <div className="py-8 text-center text-xs text-gray-500 font-mono">
-                  No completed runs recorded in this session. Run the simulation to completion (all robots reach target or collide) to log metrics.
+              {/* Pareto Frontier Scatter Plot */}
+              <div className="lg:col-span-4 p-5 rounded-xl border border-gray-800 bg-[#11171b] flex flex-col justify-between">
+                <div>
+                  <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold border-b border-gray-800 pb-2">
+                    Jerk vs Steps Pareto Plot
+                  </h3>
                 </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs font-mono text-left">
-                    <thead>
-                      <tr className="text-gray-500 border-b border-gray-850">
-                        <th className="pb-2 font-normal">Timestamp</th>
-                        <th className="pb-2 font-normal">Layout</th>
-                        <th className="pb-2 font-normal">Robot</th>
-                        <th className="pb-2 font-normal text-right">Steps (D3QN / DQN)</th>
-                        <th className="pb-2 font-normal text-right">Return (D3QN / DQN)</th>
-                        <th className="pb-2 font-normal text-right">Steer Jerk (D3QN / DQN)</th>
-                        <th className="pb-2 font-normal text-right">Status (D3QN / DQN)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-850">
-                      {sessionLogs.map((log) => (
-                        <React.Fragment key={log.id}>
-                          {log.advStats.map((adv, idx) => {
-                            const base = log.baseStats[idx];
-                            return (
-                              <tr key={`${log.id}-${idx}`} className="hover:bg-gray-900/20">
-                                <td className="py-2.5 text-gray-500">{log.timestamp}</td>
-                                <td className="py-2.5 text-gray-300 capitalize">{log.layout}</td>
-                                <td className="py-2.5 text-gray-400">R{idx + 1}</td>
-                                <td className="py-2.5 text-right font-semibold text-cyan-400">
-                                  {adv.steps} <span className="text-gray-600">/</span> <span className="text-pink-400">{base?.steps}</span>
-                                </td>
-                                <td className="py-2.5 text-right font-semibold text-cyan-400">
-                                  {adv.reward.toFixed(1)} <span className="text-gray-600">/</span> <span className="text-pink-400">{base?.reward.toFixed(1)}</span>
-                                </td>
-                                <td className="py-2.5 text-right font-semibold text-cyan-400">
-                                  {adv.jerk.toFixed(1)} <span className="text-gray-600">/</span> <span className="text-pink-400">{base?.jerk.toFixed(1)}</span>
-                                </td>
-                                <td className="py-2.5 text-right">
-                                  <span style={{ color: statusDisplay(adv.status).color }}>{statusDisplay(adv.status).label}</span>
-                                  {" "}<span className="text-gray-600">/</span>{" "}
-                                  <span style={{ color: statusDisplay(base?.status).color }}>{statusDisplay(base?.status).label}</span>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </React.Fragment>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="h-[220px] my-4">
+                  {sessionLogs.length > 0 ? (
+                    <Scatter data={paretoScatterData} options={paretoChartOptions} />
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-xs text-gray-500 text-center px-4">
+                      Pareto frontier scatter plot will populate as runs complete.
+                    </div>
+                  )}
                 </div>
-              )}
+                <div className="text-[10px] text-gray-500 font-mono text-center">
+                  Lower & Left is better (optimal convergence efficiency).
+                </div>
+              </div>
+
             </div>
 
           </div>

@@ -430,6 +430,9 @@ export default function App() {
   ]);
   const [isDrawingMode, setIsDrawingMode] = useState(false);
   const [showPotentialField, setShowPotentialField] = useState(false);
+  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [densityGrid, setDensityGrid] = useState({});
+  const [collisionHistory, setCollisionHistory] = useState([]);
   const [drawingStart, setDrawingStart] = useState(null);
   const [drawingCurrent, setDrawingCurrent] = useState(null);
 
@@ -608,6 +611,40 @@ export default function App() {
     // Background
     ctx.fillStyle = COLORS.bg;
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Dwell Heatmap Overlay
+    if (showHeatmap) {
+      Object.keys(densityGrid).forEach(key => {
+        const [cxStr, cyStr] = key.split("_");
+        const cx = parseInt(cxStr, 10);
+        const cy = parseInt(cyStr, 10);
+        const count = densityGrid[key] || 0;
+
+        if (count > 0) {
+          const ratio = Math.min(1.0, count / 15);
+          const hue = 200 - ratio * 200;
+          ctx.fillStyle = `hsla(${hue}, 90%, 50%, 0.16)`;
+          ctx.fillRect(cx * 15, cy * 15, 15, 15);
+        }
+      });
+    }
+
+    // Historical Collision Hotspots
+    if (showHeatmap && collisionHistory.length > 0) {
+      collisionHistory.forEach(pt => {
+        const pulse = (Date.now() / 250) % 2;
+        ctx.strokeStyle = "rgba(240, 84, 107, 0.6)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 8 + pulse * 6, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = "rgba(240, 84, 107, 0.4)";
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
 
     // Grid lines
     ctx.strokeStyle = COLORS.grid;
@@ -845,7 +882,7 @@ export default function App() {
       ctx.fillText(`R${rIdx + 1}`, robotState.x - 6, robotState.y - 14);
     });
 
-  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos, lidarRays, showPotentialField]);
+  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos, lidarRays, showPotentialField, showHeatmap, densityGrid, collisionHistory]);
 
   // Redraw on state shifts
   useEffect(() => {
@@ -853,7 +890,7 @@ export default function App() {
       drawScene(canvasRef.current, robots, COLORS.robot);
       drawScene(canvasRefB.current, robotsB, COLORS.robotB);
     }
-  }, [robots, robotsB, obstacles, drawScene, activeTab, viewMode, showPotentialField]);
+  }, [robots, robotsB, obstacles, drawScene, activeTab, viewMode, showPotentialField, showHeatmap, densityGrid, collisionHistory]);
 
   // Drag and Drop coordinates mapping
   const getCanvasMousePos = (e, canvas) => {
@@ -1246,6 +1283,46 @@ export default function App() {
       setRobots(nextAdvanced);
       setRobotsB(nextBaseline);
 
+      // Update cell density grid
+      setDensityGrid(prev => {
+        const nextGrid = { ...prev };
+        nextAdvanced.forEach(r => {
+          if (r.status === "navigating" || r.status === "goal_reached" || r.status === "collision") {
+            const cx = Math.floor(r.x / 15);
+            const cy = Math.floor(r.y / 15);
+            const key = `${cx}_${cy}`;
+            nextGrid[key] = (nextGrid[key] || 0) + 1;
+          }
+        });
+        nextBaseline.forEach(r => {
+          if (r.status === "navigating" || r.status === "goal_reached" || r.status === "collision") {
+            const cx = Math.floor(r.x / 15);
+            const cy = Math.floor(r.y / 15);
+            const key = `${cx}_${cy}`;
+            nextGrid[key] = (nextGrid[key] || 0) + 1;
+          }
+        });
+        return nextGrid;
+      });
+
+      // Update collision history
+      nextAdvanced.forEach(r => {
+        if (r.status === "collision") {
+          setCollisionHistory(prev => {
+            const exists = prev.some(c => Math.hypot(c.x - r.x, c.y - r.y) < 15);
+            return exists ? prev : [...prev, { x: r.x, y: r.y }];
+          });
+        }
+      });
+      nextBaseline.forEach(r => {
+        if (r.status === "collision") {
+          setCollisionHistory(prev => {
+            const exists = prev.some(c => Math.hypot(c.x - r.x, c.y - r.y) < 15);
+            return exists ? prev : [...prev, { x: r.x, y: r.y }];
+          });
+        }
+      });
+
       // Check if all robots are finished under the next step
       const D3QNDone = nextAdvanced.every(r => r.status === "goal_reached" || r.status === "collision");
       const DQNDone = nextBaseline.every(r => r.status === "goal_reached" || r.status === "collision");
@@ -1317,6 +1394,8 @@ export default function App() {
     initializeRobots();
     setIsRunning(false);
     setErrorMsg(null);
+    setDensityGrid({});
+    setCollisionHistory([]);
   };
 
   const isNearStartOrGoal = (rect) => {
@@ -1948,6 +2027,16 @@ export default function App() {
                       checked={showPotentialField}
                       onChange={(e) => setShowPotentialField(e.target.checked)}
                       className="w-4 h-4 cursor-pointer accent-cyan-400 rounded"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-gray-400">Show Dwell Heatmap:</span>
+                    <input
+                      type="checkbox"
+                      checked={showHeatmap}
+                      onChange={(e) => setShowHeatmap(e.target.checked)}
+                      className="w-4 h-4 cursor-pointer accent-amber-500 rounded"
                     />
                   </div>
 

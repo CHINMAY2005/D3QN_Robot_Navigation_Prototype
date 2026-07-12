@@ -408,6 +408,9 @@ export default function AppPrototype({ onViewModeChange }) {
     { x: 360, y: 180, width: 30, height: 180 }
   ]);
   const [isDrawingMode, setIsDrawingMode] = useState(false);
+  const [movingObstacles, setMovingObstacles] = useState(false);
+  const movingObstaclesRef = useRef(movingObstacles);
+  useEffect(() => { movingObstaclesRef.current = movingObstacles; }, [movingObstacles]);
   const [showPotentialField, setShowPotentialField] = useState(false);
   const [drawingStart, setDrawingStart] = useState(null);
   const [drawingCurrent, setDrawingCurrent] = useState(null);
@@ -466,6 +469,9 @@ export default function AppPrototype({ onViewModeChange }) {
   });
   const [trainingLogs, setTrainingLogs] = useState([]);
   const [sessionLogs, setSessionLogs] = useState([]);
+  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [densityGrid, setDensityGrid] = useState({});
+  const [collisionHistory, setCollisionHistory] = useState([]);
   const terminalEndRef = useRef(null);
 
   useEffect(() => {
@@ -533,6 +539,40 @@ export default function AppPrototype({ onViewModeChange }) {
     // Background
     ctx.fillStyle = COLORS.bg;
     ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Dwell Heatmap Overlay
+    if (showHeatmap) {
+      Object.keys(densityGrid).forEach(key => {
+        const [cxStr, cyStr] = key.split("_");
+        const cx = parseInt(cxStr, 10);
+        const cy = parseInt(cyStr, 10);
+        const count = densityGrid[key] || 0;
+
+        if (count > 0) {
+          const ratio = Math.min(1.0, count / 15);
+          const hue = 200 - ratio * 200;
+          ctx.fillStyle = `hsla(${hue}, 90%, 50%, 0.16)`;
+          ctx.fillRect(cx * 15, cy * 15, 15, 15);
+        }
+      });
+    }
+
+    // Historical Collision Hotspots
+    if (showHeatmap && collisionHistory.length > 0) {
+      collisionHistory.forEach(pt => {
+        const pulse = (Date.now() / 250) % 2;
+        ctx.strokeStyle = "rgba(240, 84, 107, 0.6)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 8 + pulse * 6, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = "rgba(240, 84, 107, 0.4)";
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
 
     // Grid lines
     ctx.strokeStyle = COLORS.grid;
@@ -724,7 +764,7 @@ export default function AppPrototype({ onViewModeChange }) {
       ctx.fillText(`R${rIdx + 1}`, robotState.x - 6, robotState.y - 14);
     });
 
-  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, showPotentialField]);
+  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, showPotentialField, showHeatmap, densityGrid, collisionHistory]);
 
   // Redraw on state shifts
   useEffect(() => {
@@ -732,7 +772,7 @@ export default function AppPrototype({ onViewModeChange }) {
       drawScene(canvasRef.current, robots, COLORS.robot);
       drawScene(canvasRefB.current, robotsB, COLORS.robotB);
     }
-  }, [robots, robotsB, obstacles, drawScene, activeTab, showPotentialField]);
+  }, [robots, robotsB, obstacles, drawScene, activeTab, showPotentialField, showHeatmap, densityGrid, collisionHistory]);
 
   // Drag and Drop coordinates mapping
   const getCanvasMousePos = (e, canvas) => {
@@ -886,6 +926,42 @@ export default function AppPrototype({ onViewModeChange }) {
       }
     ]);
 
+    // Move obstacles if enabled
+    let currentObstacles = obstaclesRef.current;
+    if (movingObstaclesRef.current) {
+      currentObstacles = currentObstacles.map(obs => {
+        let vx = obs.vx;
+        let vy = obs.vy;
+        if (vx === undefined || vy === undefined) {
+          const angle = Math.random() * Math.PI * 2;
+          vx = Math.cos(angle) * 3.0;
+          vy = Math.sin(angle) * 3.0;
+        }
+        
+        let newX = obs.x + vx;
+        let newY = obs.y + vy;
+        
+        if (newX <= 0) {
+          newX = 0;
+          vx = -vx;
+        } else if (newX + obs.width >= CANVAS_WIDTH) {
+          newX = CANVAS_WIDTH - obs.width;
+          vx = -vx;
+        }
+        
+        if (newY <= 0) {
+          newY = 0;
+          vy = -vy;
+        } else if (newY + obs.height >= CANVAS_HEIGHT) {
+          newY = CANVAS_HEIGHT - obs.height;
+          vy = -vy;
+        }
+        
+        return { ...obs, x: newX, y: newY, vx, vy };
+      });
+      setObstacles(currentObstacles);
+    }
+
     // Construct promises for active D3QN robots
     const advancedPromises = activeRobots.map((r, index) => {
       if (r.status === "goal_reached" || r.status === "collision") {
@@ -894,9 +970,9 @@ export default function AppPrototype({ onViewModeChange }) {
 
       // Apply A* or Lookahead or Greedy steering
       const actionObj = policyModeRef.current === "lookahead"
-        ? selectLookaheadAction(r.x, r.y, r.theta, obstaclesRef.current)
+        ? selectLookaheadAction(r.x, r.y, r.theta, currentObstacles)
         : policyModeRef.current === "astar" 
-        ? selectAStarAction(r.x, r.y, r.theta, obstaclesRef.current)
+        ? selectAStarAction(r.x, r.y, r.theta, currentObstacles)
         : selectGreedyAction(r.x, r.y, r.theta);
 
       return fetch(API_URL, {
@@ -910,7 +986,7 @@ export default function AppPrototype({ onViewModeChange }) {
           initial_distance: Math.hypot(GOAL.x - startPositions[index].x, GOAL.y - startPositions[index].y),
           step_count: r.stepCount,
           action: actionObj.action,
-          obstacles: obstaclesRef.current,
+          obstacles: currentObstacles,
           reward_type: "multiplicative",
           goal_reward: goalRewardRef.current,
           collision_reward: collisionPenaltyRef.current
@@ -924,7 +1000,7 @@ export default function AppPrototype({ onViewModeChange }) {
         return Promise.resolve(null);
       }
 
-      const actionObjB = selectBaselineAction(r.x, r.y, r.theta, obstaclesRef.current);
+      const actionObjB = selectBaselineAction(r.x, r.y, r.theta, currentObstacles);
 
       return fetch(API_URL, {
         method: "POST",
@@ -937,7 +1013,7 @@ export default function AppPrototype({ onViewModeChange }) {
           initial_distance: Math.hypot(GOAL.x - startPositions[index].x, GOAL.y - startPositions[index].y),
           step_count: r.stepCount,
           action: actionObjB.action,
-          obstacles: obstaclesRef.current,
+          obstacles: currentObstacles,
           reward_type: "additive",
           goal_reward: goalRewardRef.current,
           collision_reward: collisionPenaltyRef.current
@@ -1052,6 +1128,46 @@ export default function AppPrototype({ onViewModeChange }) {
         return nextList;
       });
 
+      // Update cell density grid
+      setDensityGrid(prev => {
+        const nextGrid = { ...prev };
+        nextAdvanced.forEach(r => {
+          if (r.status === "navigating" || r.status === "goal_reached" || r.status === "collision") {
+            const cx = Math.floor(r.x / 15);
+            const cy = Math.floor(r.y / 15);
+            const key = `${cx}_${cy}`;
+            nextGrid[key] = (nextGrid[key] || 0) + 1;
+          }
+        });
+        nextBaseline.forEach(r => {
+          if (r.status === "navigating" || r.status === "goal_reached" || r.status === "collision") {
+            const cx = Math.floor(r.x / 15);
+            const cy = Math.floor(r.y / 15);
+            const key = `${cx}_${cy}`;
+            nextGrid[key] = (nextGrid[key] || 0) + 1;
+          }
+        });
+        return nextGrid;
+      });
+
+      // Update collision history
+      nextAdvanced.forEach(r => {
+        if (r.status === "collision") {
+          setCollisionHistory(prev => {
+            const exists = prev.some(c => Math.hypot(c.x - r.x, c.y - r.y) < 15);
+            return exists ? prev : [...prev, { x: r.x, y: r.y }];
+          });
+        }
+      });
+      nextBaseline.forEach(r => {
+        if (r.status === "collision") {
+          setCollisionHistory(prev => {
+            const exists = prev.some(c => Math.hypot(c.x - r.x, c.y - r.y) < 15);
+            return exists ? prev : [...prev, { x: r.x, y: r.y }];
+          });
+        }
+      });
+
       // Check if all robots are finished under the next step
       const D3QNDone = nextAdvanced.every(r => r.status === "goal_reached" || r.status === "collision");
       const DQNDone = nextBaseline.every(r => r.status === "goal_reached" || r.status === "collision");
@@ -1123,6 +1239,8 @@ export default function AppPrototype({ onViewModeChange }) {
     initializeRobots();
     setIsRunning(false);
     setErrorMsg(null);
+    setDensityGrid({});
+    setCollisionHistory([]);
   };
 
   const isNearStartOrGoal = (rect) => {
@@ -1718,6 +1836,26 @@ export default function AppPrototype({ onViewModeChange }) {
                       checked={showPotentialField}
                       onChange={(e) => setShowPotentialField(e.target.checked)}
                       className="w-4 h-4 cursor-pointer accent-cyan-400 rounded"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-gray-400">Show Dwell Heatmap:</span>
+                    <input
+                      type="checkbox"
+                      checked={showHeatmap}
+                      onChange={(e) => setShowHeatmap(e.target.checked)}
+                      className="w-4 h-4 cursor-pointer accent-amber-500 rounded"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-gray-400">Enable Moving Obstacles:</span>
+                    <input
+                      type="checkbox"
+                      checked={movingObstacles}
+                      onChange={(e) => setMovingObstacles(e.target.checked)}
+                      className="w-4 h-4 cursor-pointer accent-cyan-500 rounded"
                     />
                   </div>
                 </div>

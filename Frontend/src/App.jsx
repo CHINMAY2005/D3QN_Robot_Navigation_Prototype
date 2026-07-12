@@ -510,6 +510,14 @@ export default function App() {
   const [trainingData, setTrainingData] = useState({
     episodes: [], d3qnRewards: [], dqnRewards: [], d3qnSuccess: [], dqnSuccess: [], d3qnSteps: [], dqnSteps: [], d3qnQVals: [], dqnQVals: [], actualReturn: []
   });
+  const [trainingLogs, setTrainingLogs] = useState([]);
+  const terminalEndRef = useRef(null);
+
+  useEffect(() => {
+    if (terminalEndRef.current) {
+      terminalEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [trainingLogs]);
 
 
 
@@ -1301,6 +1309,7 @@ export default function App() {
     } else {
       setIsTraining(true);
       setTrainingEpisode(0);
+      setTrainingLogs([]);
       setTrainingData({
         episodes: [],
         d3qnRewards: [],
@@ -1352,6 +1361,14 @@ export default function App() {
             dqnQVals: [...data.dqnQVals, dqnQ],
             actualReturn: [...data.actualReturn, actualR]
           }));
+
+          // Log to virtual terminal
+          const loss = (0.25 * Math.exp(-nextEp / 25) + Math.random() * 0.01 + 0.002).toFixed(4);
+          const epsilon = Math.max(0.01, 1 - (nextEp / 80)).toFixed(2);
+          const statusStr = d3qnRew > 600 ? "SUCCESS" : d3qnRew < 0 ? "COLLISION" : "TIMEOUT";
+          const statusStrB = dqnRew > 300 ? "SUCCESS" : dqnRew < -50 ? "COLLISION" : "TIMEOUT";
+          const logLine = `[Ep ${nextEp}/100] D3QN: R=${d3qnRew.toFixed(1)} (${statusStr}) | DQN: R=${dqnRew.toFixed(1)} (${statusStrB}) | Loss=${loss} | Eps=${epsilon}`;
+          setTrainingLogs(logs => [...logs, logLine]);
 
           return nextEp;
         });
@@ -1528,7 +1545,7 @@ export default function App() {
                 backgroundColor: activeTab === "training" ? "rgba(0, 242, 254, 0.08)" : "transparent"
               }}
             >
-              Training Performance Plots
+              Training Convergence Monitor
             </button>
             
             <button
@@ -2315,30 +2332,53 @@ export default function App() {
           <div className="space-y-6">
             
             {/* Training control panel */}
-            <div className="flex items-center justify-between p-5 rounded-lg border border-gray-800 bg-[#11171b]">
-              <div>
-                <h2 className="text-sm font-bold uppercase tracking-wider text-gray-200">
-                  Off-line Training Convergence Monitor
-                </h2>
-                <p className="text-xs text-gray-400 mt-1">
-                  Benchmarking training epoch reward curves and target values bias.
-                </p>
+            <div className="flex flex-col gap-4 p-5 rounded-lg border border-gray-800 bg-[#11171b]">
+              <div className="flex items-center justify-between w-full">
+                <div>
+                  <h2 className="text-sm font-bold uppercase tracking-wider text-gray-200">
+                    Real-time Training Convergence Monitor
+                  </h2>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Active streaming telemetry of model convergence rewards, success rates, path length, and Q-value estimates.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <div className="text-xs font-mono text-gray-400">
+                    Episode: <span className="font-bold text-amber-500 text-sm">{trainingEpisode}</span> / 100
+                  </div>
+                  <button
+                    onClick={handleToggleTraining}
+                    className="px-5 py-2 rounded text-xs uppercase tracking-wider font-bold transition-all cursor-pointer shadow-md"
+                    style={{
+                      backgroundColor: isTraining ? COLORS.danger : COLORS.goal,
+                      color: "#0b0f12",
+                    }}
+                  >
+                    {isTraining ? "⏹ Stop Training" : trainingEpisode >= 100 ? "🔄 Restart Training" : "🏋️ Start Training Simulator"}
+                  </button>
+                </div>
               </div>
 
-              <div className="flex items-center gap-3">
-                <div className="text-xs font-mono text-gray-400">
-                  Episode: <span className="font-bold text-amber-500 text-sm">{trainingEpisode}</span> / 100
-                </div>
-                <button
-                  onClick={handleToggleTraining}
-                  className="px-5 py-2 rounded text-xs uppercase tracking-wider font-bold transition-all cursor-pointer shadow-md"
-                  style={{
-                    backgroundColor: isTraining ? COLORS.danger : COLORS.goal,
-                    color: "#0b0f12",
-                  }}
-                >
-                  {isTraining ? "⏹ Stop Training" : trainingEpisode >= 100 ? "🔄 Restart Training" : "🏋️ Start Training Simulator"}
-                </button>
+              {/* Terminal streaming log */}
+              <div className="bg-[#07090b] border border-gray-850 rounded-lg p-3 font-mono text-[10px] h-32 overflow-y-auto space-y-1 text-left">
+                {trainingLogs.length === 0 ? (
+                  <div className="text-gray-600 text-center py-8">
+                    Console ready. Press "Start Training Simulator" to begin telemetry streaming...
+                  </div>
+                ) : (
+                  trainingLogs.map((log, idx) => (
+                    <div key={idx} className="flex justify-between hover:bg-white/[0.02] py-0.5 border-b border-white/[0.01]">
+                      <span className={log.includes("SUCCESS") ? "text-cyan-400" : log.includes("COLLISION") ? "text-rose-400" : "text-amber-500"}>
+                        {log.split(" | ")[0]}
+                      </span>
+                      <span className="text-gray-550">
+                        {log.split(" | ").slice(1).join(" | ")}
+                      </span>
+                    </div>
+                  ))
+                )}
+                <div ref={terminalEndRef} />
               </div>
             </div>
 

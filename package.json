@@ -1,0 +1,8 @@
+{
+  "name": "d3qn-robot-navigation-root",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "npm install --prefix Frontend && npm run build --prefix Frontend && cp -r Frontend/dist ./dist"
+  }
+}

@@ -1,8 +1,10 @@
 # Interactive D3QN Robot Navigation Sandbox
 
-An interactive 2D simulation environment designed for testing, visualizing, and researching robot navigation using Reinforcement Learning (RL) techniques (Double Dueling Deep Q-Networks - D3QN) alongside traditional pathfinding (A*) and steering algorithms.
+An interactive 2D simulation environment designed for testing, visualizing, and researching robot navigation using Reinforcement Learning (RL) techniques (Double Dueling Deep Q-Networks - D3QN) alongside traditional pathfinding (A*) and predictive lookahead steering.
 
-The sandbox features a **FastAPI backend** that simulates unicycle kinematics and dynamically calculates request-driven reward values, paired with a feature-rich **React (Vite) frontend** providing side-by-side comparative views, active LiDAR ray-casting, live neural network decomposition streams, and training progress visualizations.
+### 🌐 Live Production Deployments
+* **Frontend Dashboard**: [https://d3qn.vercel.app/](https://d3qn.vercel.app/) (Hosted on Vercel)
+* **FastAPI Kinematics Backend**: [https://d3qn-robot-navigation-backend.onrender.com](https://d3qn-robot-navigation-backend.onrender.com) (Hosted on Render)
 
 ---
 
@@ -16,7 +18,7 @@ graph TD
         Canvas2[Baseline DQN Canvas]
         LidarCalc[8-Directional LiDAR Solver]
         Decomp[Dueling DQN V/A Breakdown Visualizer]
-        TrainSim[Offline Training Plots Simulator]
+        TrainSim[Real-time Training Monitor & Log Console]
         History[State history snap stack]
     end
     
@@ -38,114 +40,60 @@ graph TD
 
 ---
 
-## Advanced Sandbox Features
+## Key Features
 
-### 1. Dual-Agent Real-time Benchmarking Arena
-The dashboard renders two split-screen canvas views side-by-side:
+### 1. Minimalistic SVG Steering Simulator Landing Page
+A dark-themed engineering landing page welcoming users with:
+* Key project performance metrics panel.
+* Dynamic SVG local interactive steering model simulating local collision avoidance and LiDAR scanning.
+* Deep-dive visual mapping of the system architecture pipeline.
+
+### 2. Dual-Agent Real-time Benchmarking Arena
+A side-by-side split-screen canvas comparator view contrasting:
 * **Advanced Agent (Neon Cyan)**: Navigates using Lookahead (MPC) or Dynamic A* steering, evaluating under the **Multiplicative Reward** formulation.
-* **Baseline Agent (Neon Pink)**: Simulates a shortsighted standard DQN agent (depth 2 search horizon, exploration noise, and no turning smoothness penalty) evaluating under the **Additive Reward** formulation.
-* **Synchronized Environment**: Shared obstacles and goal target positions ensure a completely fair comparative sandbox. Obstacles drawn or randomized in one canvas update the other concurrently.
+* **Baseline Agent (Neon Pink)**: Simulates a standard DQN agent, evaluating under the **Additive Reward** formulation.
+* **Parallel Multi-Robot Benchmarking**: Benchmark **1 to 4 robots** simultaneously with interactive drag-and-drop start coordinates.
+* **Interactive Steps Navigation**: Rewind or fast-forward simulation frames manually using local state history snaps.
 
-### 2. Multi-Robot Parallel Benchmarking
-* Select **1 to 4 robots** using the dropdown control panel. Both canvases spawn the chosen number of robots concurrently.
-* Compare how the D3QN lookahead and dynamic A* paths scale across multiple concurrent starting positions versus the baseline DQN model in real-time.
+### 3. Decision Field & Trajectory Footprint Visualizers
+* **Live Vector Field Flow**: Toggleable background overlay showing net force directions (goal attraction + obstacle repulsion) driving the robot paths.
+* **Dwell Heatmap Overlay**: Traces trajectory density footprint cells dynamically, grading cell colors from cool cyan (low occupancy) to hot red (high dwell time).
+* **Collision Hotspots**: Places flashing target ring indicators at coordinates where robots collided.
 
-### 3. Drag-and-Drop Coordinate Positioning
-* Reposition the start coordinates of any robot by clicking and dragging them directly on either canvas. The new starting points sync automatically across both environments.
+### 4. Dynamic Moving Obstacles
+* Obstacles slide vertically with custom speed vectors and bounce boundaries. Testing the robot's real-time predictive path-planning and collision avoidance under moving constraints.
 
-### 4. Interactive Step-by-Step Navigation
-* **Next Step**: Advances both simulation environments by a single step manually.
-* **Prev Step**: Rewinds the state snapshot history (coordinates, status, reward history, step counts) using a local state history stack, enabling frame-by-frame analysis of pathing decisions.
+### 5. Steering Jerk vs Steps Pareto Plot
+* Tracks steering heading jerk (rad) of all paths and maps completed runs onto a **Pareto Frontier Scatter Plot**, visually proving D3QN's superior steering smoothness and path efficiency versus flat DQN.
 
-### 5. 8-Directional LiDAR Sensor Raycasting
-* Projects 8 rangefinder beams from the robot's center at $45^\circ$ offsets relative to its heading.
-* Dynamically calculates intersections with obstacle boundaries and canvas boundary walls:
-  * **Safe (Distance > 80)**: Semi-transparent green ray.
-  * **Warning (Distance 40-80)**: Semi-transparent orange ray.
-  * **Immediate Hazard (Distance < 40)**: Semi-transparent red ray.
-* Displays LiDAR beams for the primary selected robot to show how the state space is modeled.
-
----
-
-## Navigation & Steering Policies
-
-### 1. Lookahead Policy (MPC-inspired Tree Search)
-A short-horizon predictive control policy. At each step, it performs a depth-first search (depth 8) simulating future states using unicycle kinematics:
-* Simulates candidate action trajectories.
-* Evaluates trajectories against collision with rectangular obstacles.
-* **Goal-Seeking Optimization (BUG FIX)**: Stops path search and returns a maximum score (`5000 - depth`) immediately if any simulated node reaches within the goal threshold. This prevents erratic oscillations and meandering near the target.
-* Penalizes collisions ($R = -1000$) and turning changes (steering smoothness penalty).
-* Selects the immediate action leading to the path that ends closest to the goal while guaranteeing safety.
-
-### 2. Dynamic A* Pathfinding + Local Pure Pursuit (BUG FIX)
-* **Dynamic Re-planning**: To prevent the robot from circling loops at the starting coordinate, the algorithm re-plans the shortest grid path using **A* search** from the robot's *current coordinates* at every step.
-* Steers directly towards the immediate next node (`path[1]`) on the newly generated A* path, resolving the circling loops bug completely.
-
----
-
-## Reinforcement Learning Environment Design
-
-### Action Space
-A discrete action space consisting of **5 angular velocities** (rad/s) with a fixed forward linear velocity of $15.0 \text{ units/s}$:
-| Action Index | Angular Velocity ($\omega$) | Description |
-| :---: | :---: | :---: |
-| **0** | $-1.5$ rad/s | Hard Left Turn |
-| **1** | $-0.75$ rad/s | Soft Left Turn |
-| **2** | $0.0$ rad/s | Move Straight |
-| **3** | $0.75$ rad/s | Soft Right Turn |
-| **4** | $1.5$ rad/s | Hard Right Turn |
-
-### Reward Formulations Comparison
-* **Multiplicative Reward (D3QN Agent)**:
-  $$R = R_d \times R_{\theta}$$
-  * $R_d = 2.0 \times e^{-\frac{\text{distance}_{\text{current}}}{\text{distance}_{\text{previous}}}}$ (Progress Reward)
-  * $R_{\theta} = 5.0 - \cos(\theta_{\text{error}})$ (Alignment Reward)
-  * *Characteristics*: Deviating bearing errors collapse the step reward to near-zero, forcing the robot to steer directly toward the goal bearing.
-* **Additive Reward (Baseline Agent)**:
-  $$R = R_d + R_{\theta} - 2.0$$
-  * *Characteristics*: Weakly guides the agent because heading errors do not collapse the progress reward, allowing the robot to drift or meander.
-
----
-
-## Neural Network Architecture Breakdowns
-
-### Dueling DQN Value/Advantage Decomposition
-Exposes a real-time progress bar panel visualizer decomposing Q-values into State Value $V(s)$ and Action Advantages $A(s, a_i)$:
-$$Q(s, a) = V(s) + \left(A(s, a) - \frac{1}{|A|} \sum_{a'} A(s, a')\right)$$
-* **State Value $V(s)$**: Represents baseline state utility (drops as the robot approaches obstacles and rises near the goal).
-* **Action Advantage $A(s, a)$**: Evaluates the relative value of selecting a specific turning action versus alternative options.
-* *Contrast*: Baseline DQN displays only flat $Q(s, a)$ values with no decomposition.
-
-### Offline Training Performance Simulator Tab
-Runs an animated offline training process logging learning metrics over 100 episodes:
-1. **Cumulative Reward**: D3QN converges faster and higher than DQN.
-2. **Success Rate**: D3QN reaches ~98% success, while standard DQN plateaus near ~72%.
-3. **Average Steps to Goal**: D3QN path optimization reduces average steps significantly compared to DQN's meandering.
-4. **Q-value Overestimation Bias Analysis**: Demonstrates Double DQN's stable Q-estimates tracking true returns, contrasted with Standard DQN's severe overestimation bias.
+### 6. Real-time Training Convergence Monitor
+* Upgraded offline training curves simulation showing success rates, steps-to-goal, and Q-value overestimation bias.
+* Includes a **scrolling virtual terminal log console** streaming metrics ( Bellman loss, exploration rate, episode returns, and collision/success statuses) in real time.
 
 ---
 
 ## Installation & Getting Started
 
-### Backend Setup (FastAPI)
+### Local Backend Setup (FastAPI)
 1. Navigate to the `Backend` directory:
    ```bash
    cd Backend
    ```
-2. Activate the virtual environment:
+2. Set up and activate a virtual environment:
    ```bash
+   python3 -m venv venv
    source venv/bin/activate
    ```
-3. Install uvicorn and FastAPI dependencies:
+3. Install dependencies:
    ```bash
-   pip install fastapi uvicorn pydantic
+   pip install -r requirements.txt
    ```
-4. Start the server:
+4. Start the development server:
    ```bash
    uvicorn main:app --reload --port 8000
    ```
 
-### Frontend Setup (React + Vite)
+### Local Frontend Setup (React + Vite)
 1. Navigate to the `Frontend` directory:
    ```bash
    cd Frontend
@@ -154,8 +102,32 @@ Runs an animated offline training process logging learning metrics over 100 epis
    ```bash
    npm install
    ```
-3. Start the development server:
+3. Create a `.env.local` file to set your local backend API URL:
+   ```env
+   VITE_API_URL=http://localhost:8000/step
+   ```
+4. Start the development server:
    ```bash
    npm run dev
    ```
-4. Access the interface at [http://localhost:5173](http://localhost:5173).
+5. Access the interface at [http://localhost:5173](http://localhost:5173).
+
+---
+
+## Cloud Deployment
+
+### Backend Deployment (Render)
+This project is configured with a Render blueprint (`render.yaml`) for one-click setup. When deploying to **Render**:
+1. Select **Blueprint** in the Render Dashboard.
+2. Connect this repository. Render will declare:
+   * Build command: `pip install -r requirements.txt`
+   * Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+   * Root Directory: `Backend`
+
+### Frontend Deployment (Vercel)
+This project uses a root-level build delegation script (`package.json`) and SPA router configuration (`vercel.json`) allowing immediate monorepo build sync. When deploying to **Vercel**:
+1. Connect your repository.
+2. In Vercel environment variables, set:
+   * **Key**: `VITE_API_URL`
+   * **Value**: `https://your-deployed-backend-url.com/step`
+3. Click deploy. Vercel will build out the frontend automatically.

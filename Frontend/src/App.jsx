@@ -12,6 +12,8 @@ import {
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler);
 import AppPrototype from "./AppPrototype.jsx";
+import LandingPage from "./LandingPage.jsx";
+
 
 // --------------------------------------------------------------------------
 // Constants — must stay in sync with the FastAPI backend (main.py)
@@ -380,7 +382,7 @@ function distanceTo(x, y, target) {
 // --------------------------------------------------------------------------
 
 export default function App() {
-  const [viewMode, setViewMode] = useState("upgraded");
+  const [viewMode, setViewMode] = useState("landing");
   const [activeTab, setActiveTab] = useState("comparison");
 
   // Multi-Robot Configuration
@@ -771,11 +773,11 @@ export default function App() {
 
   // Redraw on state shifts
   useEffect(() => {
-    if (activeTab === "comparison") {
+    if (activeTab === "comparison" && viewMode === "upgraded") {
       drawScene(canvasRef.current, robots, COLORS.robot);
       drawScene(canvasRefB.current, robotsB, COLORS.robotB);
     }
-  }, [robots, robotsB, obstacles, drawScene, activeTab]);
+  }, [robots, robotsB, obstacles, drawScene, activeTab, viewMode]);
 
   // Drag and Drop coordinates mapping
   const getCanvasMousePos = (e, canvas) => {
@@ -1462,6 +1464,10 @@ export default function App() {
     return mapping[stat] || { label: "STANDBY", color: COLORS.textDim };
   };
 
+  if (viewMode === "landing") {
+    return <LandingPage onViewModeChange={setViewMode} />;
+  }
+
   if (viewMode === "prototype") {
     return <AppPrototype onViewModeChange={setViewMode} />;
   }
@@ -1488,6 +1494,20 @@ export default function App() {
           </div>
           
           <div className="flex gap-2">
+            <button
+              onClick={() => setViewMode("landing")}
+              title="Return to Landing Page"
+              className="p-1.5 rounded border transition-all cursor-pointer flex items-center justify-center hover:bg-cyan-500/10 hover:shadow-[0_0_8px_rgba(6,182,212,0.4)] animate-pulse"
+              style={{
+                color: COLORS.robot,
+                borderColor: COLORS.panelBorder,
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                <polyline points="9 22 9 12 15 12 15 22" />
+              </svg>
+            </button>
             <button
               onClick={() => { setActiveTab("comparison"); handleReset(); }}
               className="px-4 py-1.5 rounded text-xs uppercase tracking-wider font-semibold border transition-all cursor-pointer"
@@ -1595,44 +1615,6 @@ export default function App() {
                   }}
                 >
                   ✏️ {isDrawingMode ? "Lock Obstacles" : "Draw Custom Block"}
-                </button>
-              </div>
-
-              {/* Policy Selector for Advanced Agent */}
-              <div className="flex items-center gap-3 text-xs font-mono">
-                <span className="text-gray-400 font-semibold">D3QN Policy Mode:</span>
-                <button
-                  onClick={() => setPolicyMode("lookahead")}
-                  className="px-3 py-1.5 rounded border transition-colors cursor-pointer"
-                  style={{
-                    borderColor: policyMode === "lookahead" ? COLORS.robot : COLORS.panelBorder,
-                    color: policyMode === "lookahead" ? COLORS.robot : COLORS.textDim,
-                    backgroundColor: policyMode === "lookahead" ? "rgba(0, 242, 254, 0.08)" : "transparent",
-                  }}
-                >
-                  Lookahead (MPC)
-                </button>
-                <button
-                  onClick={() => setPolicyMode("astar")}
-                  className="px-3 py-1.5 rounded border transition-colors cursor-pointer"
-                  style={{
-                    borderColor: policyMode === "astar" ? COLORS.robot : COLORS.panelBorder,
-                    color: policyMode === "astar" ? COLORS.robot : COLORS.textDim,
-                    backgroundColor: policyMode === "astar" ? "rgba(0, 242, 254, 0.08)" : "transparent",
-                  }}
-                >
-                  A* Shortest Path
-                </button>
-                <button
-                  onClick={() => setPolicyMode("greedy")}
-                  className="px-3 py-1.5 rounded border transition-colors cursor-pointer"
-                  style={{
-                    borderColor: policyMode === "greedy" ? COLORS.robot : COLORS.panelBorder,
-                    color: policyMode === "greedy" ? COLORS.robot : COLORS.textDim,
-                    backgroundColor: policyMode === "greedy" ? "rgba(0, 242, 254, 0.08)" : "transparent",
-                  }}
-                >
-                  Greedy Bearings
                 </button>
               </div>
             </div>

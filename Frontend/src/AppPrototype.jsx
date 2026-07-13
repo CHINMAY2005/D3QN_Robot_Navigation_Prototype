@@ -60,7 +60,7 @@ const COLORS = {
 // Raycasting & Spatial Sensing (LiDAR)
 // --------------------------------------------------------------------------
 
-function calculateLidarRanges(x, y, theta, obstaclesList, noise = 0) {
+function calculateLidarRanges(x, y, theta, obstaclesList) {
   const numRays = 8;
   const maxRange = 300; 
   const ranges = [];
@@ -104,11 +104,7 @@ function calculateLidarRanges(x, y, theta, obstaclesList, noise = 0) {
       }
     });
 
-    let finalRange = Math.min(tMin, maxRange);
-    if (noise > 0) {
-      finalRange = Math.max(0, Math.min(maxRange, finalRange + (Math.random() - 0.5) * noise));
-    }
-    ranges.push(finalRange);
+    ranges.push(Math.min(tMin, maxRange));
   }
 
   return ranges;
@@ -122,12 +118,12 @@ function normalizeAngle(angle) {
   return Math.atan2(Math.sin(angle), Math.cos(angle));
 }
 
-function bearingToGoal(x, y, goal = GOAL) {
-  return Math.atan2(goal.y - y, goal.x - x);
+function bearingToGoal(x, y) {
+  return Math.atan2(GOAL.y - y, GOAL.x - x);
 }
 
-function selectGreedyAction(x, y, theta, goal = GOAL) {
-  const desiredTheta = bearingToGoal(x, y, goal);
+function selectGreedyAction(x, y, theta) {
+  const desiredTheta = bearingToGoal(x, y);
   const headingError = normalizeAngle(desiredTheta - theta);
 
   let bestAction = 2; 
@@ -145,7 +141,7 @@ function selectGreedyAction(x, y, theta, goal = GOAL) {
   return { action: bestAction, headingError };
 }
 
-function selectLookaheadAction(x, y, theta, obstaclesList, goal = GOAL) {
+function selectLookaheadAction(x, y, theta, obstaclesList) {
   const V = 15.0;
   const ACTIONS_SUBSEQUENT = [0, 2, 4];
 
@@ -171,12 +167,13 @@ function selectLookaheadAction(x, y, theta, obstaclesList, goal = GOAL) {
   function findBestPath(px, py, ptheta, depth, maxDepth) {
     if (checkCollision(px, py)) return { score: -1000 + depth, path: [] };
     
-    if (Math.hypot(goal.x - px, goal.y - py) < GOAL_THRESHOLD) {
+    // BUG FIX: Stop searching and return goal-reached bonus if robot hits the goal in lookahead steps
+    if (Math.hypot(GOAL.x - px, GOAL.y - py) < GOAL_THRESHOLD) {
       return { score: 5000 - depth, path: [] };
     }
     
     if (depth === maxDepth) {
-      const dist = Math.hypot(goal.x - px, goal.y - py);
+      const dist = Math.hypot(GOAL.x - px, GOAL.y - py);
       return { score: 1000 - dist, path: [] };
     }
     
@@ -204,7 +201,7 @@ function selectLookaheadAction(x, y, theta, obstaclesList, goal = GOAL) {
 
   const result = findBestPath(x, y, theta, 0, 8);
   const chosenAction = result.path[0] !== undefined ? result.path[0] : 2;
-  const desiredTheta = bearingToGoal(x, y, goal);
+  const desiredTheta = bearingToGoal(x, y);
   const headingError = normalizeAngle(desiredTheta - theta);
   return { action: chosenAction, headingError };
 }
@@ -285,10 +282,10 @@ function astarPath(startX, startY, goalX, goalY, obstaclesList) {
 }
 
 // BUG FIX: Dynamic A* Path Planner to prevent starting circling loops
-function selectAStarAction(x, y, theta, obstaclesList, goal = GOAL) {
-  const path = astarPath(x, y, goal.x, goal.y, obstaclesList);
+function selectAStarAction(x, y, theta, obstaclesList) {
+  const path = astarPath(x, y, GOAL.x, GOAL.y, obstaclesList);
   if (!path || path.length < 2) {
-    return selectGreedyAction(x, y, theta, goal);
+    return selectGreedyAction(x, y, theta);
   }
   // Next node along path is path[1] (path[0] is start node)
   const target = path[1];
@@ -310,10 +307,10 @@ function selectAStarAction(x, y, theta, obstaclesList, goal = GOAL) {
   return { action: bestAction, headingError };
 }
 
-function selectBaselineAction(x, y, theta, obstaclesList, goal = GOAL) {
+function selectBaselineAction(x, y, theta, obstaclesList) {
   if (Math.random() < 0.12) {
     const randomAction = Math.floor(Math.random() * 5);
-    const desiredTheta = bearingToGoal(x, y, goal);
+    const desiredTheta = bearingToGoal(x, y);
     const headingError = normalizeAngle(desiredTheta - theta);
     return { action: randomAction, headingError };
   }
@@ -343,7 +340,7 @@ function selectBaselineAction(x, y, theta, obstaclesList, goal = GOAL) {
   function findBestPath(px, py, ptheta, depth, maxDepth) {
     if (checkCollision(px, py)) return { score: -500 + depth, path: [] };
     if (depth === maxDepth) {
-      const dist = Math.hypot(goal.x - px, goal.y - py);
+      const dist = Math.hypot(GOAL.x - px, GOAL.y - py);
       return { score: 500 - dist, path: [] };
     }
     
@@ -366,7 +363,7 @@ function selectBaselineAction(x, y, theta, obstaclesList, goal = GOAL) {
   
   const result = findBestPath(x, y, theta, 0, 2);
   const chosenAction = result.path[0] !== undefined ? result.path[0] : 2;
-  const desiredTheta = bearingToGoal(x, y, goal);
+  const desiredTheta = bearingToGoal(x, y);
   const headingError = normalizeAngle(desiredTheta - theta);
   return { action: chosenAction, headingError };
 }
@@ -414,32 +411,10 @@ export default function AppPrototype({ onViewModeChange }) {
   const [movingObstacles, setMovingObstacles] = useState(false);
   const movingObstaclesRef = useRef(movingObstacles);
   useEffect(() => { movingObstaclesRef.current = movingObstacles; }, [movingObstacles]);
+  const [cooperativeNavigation, setCooperativeNavigation] = useState(false);
+  const cooperativeNavigationRef = useRef(cooperativeNavigation);
+  useEffect(() => { cooperativeNavigationRef.current = cooperativeNavigation; }, [cooperativeNavigation]);
   const [showPotentialField, setShowPotentialField] = useState(false);
-
-  const [movingGoal, setMovingGoal] = useState(false);
-  const [goalPos, setGoalPos] = useState({ x: 520, y: 200 });
-  const [controlNoise, setControlNoise] = useState(0);
-  const [sensorNoise, setSensorNoise] = useState(0);
-  const [goalFollowMouse, setGoalFollowMouse] = useState(false);
-  const [hoveredPath, setHoveredPath] = useState(null);
-  const [wD, setWD] = useState(1.0);
-  const [wTheta, setWTheta] = useState(1.0);
-
-  const movingGoalRef = useRef(movingGoal);
-  const goalPosRef = useRef(goalPos);
-  const controlNoiseRef = useRef(controlNoise);
-  const sensorNoiseRef = useRef(sensorNoise);
-  const goalFollowMouseRef = useRef(goalFollowMouse);
-  const wDRef = useRef(wD);
-  const wThetaRef = useRef(wTheta);
-
-  useEffect(() => { movingGoalRef.current = movingGoal; }, [movingGoal]);
-  useEffect(() => { goalPosRef.current = goalPos; }, [goalPos]);
-  useEffect(() => { controlNoiseRef.current = controlNoise; }, [controlNoise]);
-  useEffect(() => { sensorNoiseRef.current = sensorNoise; }, [sensorNoise]);
-  useEffect(() => { goalFollowMouseRef.current = goalFollowMouse; }, [goalFollowMouse]);
-  useEffect(() => { wDRef.current = wD; }, [wD]);
-  useEffect(() => { wThetaRef.current = wTheta; }, [wTheta]);
   const [drawingStart, setDrawingStart] = useState(null);
   const [drawingCurrent, setDrawingCurrent] = useState(null);
 
@@ -453,7 +428,7 @@ export default function AppPrototype({ onViewModeChange }) {
     const listB = [];
     for (let i = 0; i < numRobots; i++) {
       const start = startPositions[i] || DEFAULT_START_POSITIONS[i];
-      const dist = distanceTo(start.x, start.y, goalPos);
+      const dist = distanceTo(start.x, start.y, GOAL);
       
       const newRobotObj = {
         x: start.x,
@@ -529,11 +504,41 @@ export default function AppPrototype({ onViewModeChange }) {
   useEffect(() => { goalRewardRef.current = goalReward; }, [goalReward]);
   useEffect(() => { collisionPenaltyRef.current = collisionPenalty; }, [collisionPenalty]);
 
+  const generateProceduralMaze = () => {
+    const dividers = [150, 260, 370];
+    const newObs = [];
+    dividers.forEach((xCoord) => {
+      const gapIndex = Math.floor(Math.random() * 4);
+      for (let segment = 0; segment < 4; segment++) {
+        if (segment !== gapIndex && segment !== (gapIndex + 1) % 4) {
+          newObs.push({
+            x: xCoord,
+            y: segment * 100,
+            width: 30,
+            height: 100
+          });
+        }
+      }
+    });
+
+    if (Math.random() > 0.4) {
+      newObs.push({
+        x: 180,
+        y: 180 + Math.floor(Math.random() * 40),
+        width: 190,
+        height: 25
+      });
+    }
+    return newObs;
+  };
+
   // Apply layout presets
   const handleApplyPreset = (name) => {
     setPresetName(name);
     let newObs = [];
-    if (name === "columns") {
+    if (name === "maze") {
+      newObs = generateProceduralMaze();
+    } else if (name === "columns") {
       newObs = [
         { x: 200, y: 40, width: 30, height: 180 },
         { x: 360, y: 180, width: 30, height: 180 }
@@ -636,11 +641,11 @@ export default function AppPrototype({ onViewModeChange }) {
           if (inside) continue;
 
           // 1. Attraction to goal
-          const dxG = goalPos.x - x;
-          const dyG = goalPos.y - y;
+          const dxG = GOAL.x - x;
+          const dyG = GOAL.y - y;
           const distG = Math.hypot(dxG, dyG);
-          let forceX = distG > 0 ? (dxG / distG) * (1.5 * wD) : 0;
-          let forceY = distG > 0 ? (dyG / distG) * (1.5 * wD) : 0;
+          let forceX = distG > 0 ? (dxG / distG) * 1.5 : 0;
+          let forceY = distG > 0 ? (dyG / distG) * 1.5 : 0;
 
           // 2. Repulsion from obstacles
           obstacles.forEach((obs) => {
@@ -710,36 +715,32 @@ export default function AppPrototype({ onViewModeChange }) {
 
     // Draw Goal
     ctx.beginPath();
-    ctx.arc(goalPos.x, goalPos.y, GOAL_RADIUS, 0, Math.PI * 2);
+    ctx.arc(GOAL.x, GOAL.y, GOAL_RADIUS, 0, Math.PI * 2);
     ctx.fillStyle = COLORS.goal;
     ctx.fill();
     ctx.strokeStyle = "rgba(79, 214, 122, 0.35)";
     ctx.lineWidth = 4;
     ctx.stroke();
 
-    // Draw Hovered Pareto Path Trail (glowing overlay)
-    if (hoveredPath && hoveredPath.length > 0) {
-      ctx.beginPath();
-      ctx.moveTo(hoveredPath[0].x, hoveredPath[0].y);
-      for (let i = 1; i < hoveredPath.length; i++) {
-        ctx.lineTo(hoveredPath[i].x, hoveredPath[i].y);
-      }
-      ctx.strokeStyle = "rgba(245, 158, 11, 0.75)";
-      ctx.lineWidth = 4;
-      ctx.shadowColor = "rgba(245, 158, 11, 0.9)";
-      ctx.shadowBlur = 10;
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-      ctx.shadowColor = "transparent";
-    }
-
     // Draw each robot in the list
     robotStatesList.forEach((robotState, rIdx) => {
       const isSelected = rIdx === selectedRobotIndex;
 
+      let renderObstacles = obstacles;
+      if (cooperativeNavigation) {
+        const otherRobots = robotStatesList.filter((_, idx) => idx !== rIdx && robotStatesList[idx].status === "navigating");
+        const extraObs = otherRobots.map(other => ({
+          x: other.x - 8,
+          y: other.y - 8,
+          width: 16,
+          height: 16
+        }));
+        renderObstacles = [...obstacles, ...extraObs];
+      }
+
       // Draw LiDAR range beams for selected robot
       if (showLidar && isSelected) {
-        const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, obstacles, sensorNoise);
+        const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, renderObstacles);
         ranges.forEach((dist, idx) => {
           const phi = robotState.theta + (idx * Math.PI) / 4;
           const beamX = robotState.x + dist * Math.cos(phi);
@@ -808,7 +809,7 @@ export default function AppPrototype({ onViewModeChange }) {
       ctx.fillText(`R${rIdx + 1}`, robotState.x - 6, robotState.y - 14);
     });
 
-  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos, showPotentialField, showHeatmap, densityGrid, collisionHistory, hoveredPath]);
+  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, showPotentialField, showHeatmap, densityGrid, collisionHistory, cooperativeNavigation]);
 
   // Redraw on state shifts
   useEffect(() => {
@@ -816,7 +817,7 @@ export default function AppPrototype({ onViewModeChange }) {
       drawScene(canvasRef.current, robots, COLORS.robot);
       drawScene(canvasRefB.current, robotsB, COLORS.robotB);
     }
-  }, [robots, robotsB, obstacles, drawScene, activeTab, goalPos, showPotentialField, showHeatmap, densityGrid, collisionHistory, hoveredPath]);
+  }, [robots, robotsB, obstacles, drawScene, activeTab, showPotentialField, showHeatmap, densityGrid, collisionHistory, cooperativeNavigation]);
 
   // Drag and Drop coordinates mapping
   const getCanvasMousePos = (e, canvas) => {
@@ -856,10 +857,6 @@ export default function AppPrototype({ onViewModeChange }) {
 
   const handleCanvasMouseMove = (e, canvas) => {
     const pos = getCanvasMousePos(e, canvas);
-
-    if (goalFollowMouse) {
-      setGoalPos({ x: pos.x, y: pos.y });
-    }
 
     if (isDrawingMode) {
       if (!drawingStart) return;
@@ -909,8 +906,8 @@ export default function AppPrototype({ onViewModeChange }) {
   const updateDuelingBreakdown = useCallback((robotState) => {
     if (!robotState) return;
     const { x, y, theta } = robotState;
-    const d = distanceTo(x, y, goalPos);
-    const dMax = distanceTo(startPositions[selectedRobotIndex].x, startPositions[selectedRobotIndex].y, goalPos);
+    const d = distanceTo(x, y, GOAL);
+    const dMax = distanceTo(startPositions[selectedRobotIndex].x, startPositions[selectedRobotIndex].y, GOAL);
     const distFactor = Math.max(0, 1.0 - d / dMax);
     
     let collisionRisk = 0;
@@ -924,7 +921,7 @@ export default function AppPrototype({ onViewModeChange }) {
     });
 
     const stateValue = 480 * distFactor - 160 * Math.min(1.0, collisionRisk);
-    const bearing = bearingToGoal(x, y, goalPos);
+    const bearing = bearingToGoal(x, y);
     const advs = ANGULAR_VELOCITIES.map(omega => {
       const projectedTheta = normalizeAngle(theta + omega);
       const err = Math.abs(normalizeAngle(bearing - projectedTheta));
@@ -1010,27 +1007,30 @@ export default function AppPrototype({ onViewModeChange }) {
       setObstacles(currentObstacles);
     }
 
-    // 1. Update Goal Target Position if enabled (Sine-wave vertical movement)
-    let currentGoal = goalPosRef.current;
-    if (movingGoalRef.current) {
-      const step = activeRobots[0] ? activeRobots[0].stepCount + 1 : 1;
-      const goalY = 200 + 90 * Math.sin(step * 0.15);
-      currentGoal = { x: 520, y: goalY };
-      setGoalPos(currentGoal);
-    }
-
     // Construct promises for active D3QN robots
     const advancedPromises = activeRobots.map((r, index) => {
       if (r.status === "goal_reached" || r.status === "collision") {
         return Promise.resolve(null);
       }
 
+      let robotObstacles = currentObstacles;
+      if (cooperativeNavigationRef.current) {
+        const otherRobots = activeRobots.filter((_, idx) => idx !== index && activeRobots[idx].status === "navigating");
+        const extraObs = otherRobots.map(other => ({
+          x: other.x - 8,
+          y: other.y - 8,
+          width: 16,
+          height: 16
+        }));
+        robotObstacles = [...currentObstacles, ...extraObs];
+      }
+
       // Apply A* or Lookahead or Greedy steering
       const actionObj = policyModeRef.current === "lookahead"
-        ? selectLookaheadAction(r.x, r.y, r.theta, currentObstacles, currentGoal)
+        ? selectLookaheadAction(r.x, r.y, r.theta, robotObstacles)
         : policyModeRef.current === "astar" 
-        ? selectAStarAction(r.x, r.y, r.theta, currentObstacles, currentGoal)
-        : selectGreedyAction(r.x, r.y, r.theta, currentGoal);
+        ? selectAStarAction(r.x, r.y, r.theta, robotObstacles)
+        : selectGreedyAction(r.x, r.y, r.theta);
 
       return fetch(API_URL, {
         method: "POST",
@@ -1040,19 +1040,15 @@ export default function AppPrototype({ onViewModeChange }) {
           y: r.y,
           theta: r.theta,
           prev_distance: r.prevDistance,
-          initial_distance: Math.hypot(currentGoal.x - startPositions[index].x, currentGoal.y - startPositions[index].y),
+          initial_distance: Math.hypot(GOAL.x - startPositions[index].x, GOAL.y - startPositions[index].y),
           step_count: r.stepCount,
           action: actionObj.action,
-          obstacles: currentObstacles,
+          obstacles: robotObstacles,
           reward_type: "multiplicative",
           goal_reward: goalRewardRef.current,
-          collision_reward: collisionPenaltyRef.current,
-          w_d: wDRef.current,
-          w_theta: wThetaRef.current,
-          goal_x: currentGoal.x,
-          goal_y: currentGoal.y
+          collision_reward: collisionPenaltyRef.current
         }),
-      }).then(res => res.json()).then(data => ({ index, data, action: actionObj.action }));
+      }).then(res => res.json()).then(data => ({ index, data }));
     });
 
     // Construct promises for active baseline DQN robots
@@ -1061,7 +1057,19 @@ export default function AppPrototype({ onViewModeChange }) {
         return Promise.resolve(null);
       }
 
-      const actionObjB = selectBaselineAction(r.x, r.y, r.theta, currentObstacles, currentGoal);
+      let robotObstaclesB = currentObstacles;
+      if (cooperativeNavigationRef.current) {
+        const otherRobotsB = activeRobotsB.filter((_, idx) => idx !== index && activeRobotsB[idx].status === "navigating");
+        const extraObsB = otherRobotsB.map(other => ({
+          x: other.x - 8,
+          y: other.y - 8,
+          width: 16,
+          height: 16
+        }));
+        robotObstaclesB = [...currentObstacles, ...extraObsB];
+      }
+
+      const actionObjB = selectBaselineAction(r.x, r.y, r.theta, robotObstaclesB);
 
       return fetch(API_URL, {
         method: "POST",
@@ -1071,19 +1079,15 @@ export default function AppPrototype({ onViewModeChange }) {
           y: r.y,
           theta: r.theta,
           prev_distance: r.prevDistance,
-          initial_distance: Math.hypot(currentGoal.x - startPositions[index].x, currentGoal.y - startPositions[index].y),
+          initial_distance: Math.hypot(GOAL.x - startPositions[index].x, GOAL.y - startPositions[index].y),
           step_count: r.stepCount,
           action: actionObjB.action,
-          obstacles: currentObstacles,
+          obstacles: robotObstaclesB,
           reward_type: "additive",
           goal_reward: goalRewardRef.current,
-          collision_reward: collisionPenaltyRef.current,
-          w_d: wDRef.current,
-          w_theta: wThetaRef.current,
-          goal_x: currentGoal.x,
-          goal_y: currentGoal.y
+          collision_reward: collisionPenaltyRef.current
         }),
-      }).then(res => res.json()).then(data => ({ index, data, action: actionObjB.action }));
+      }).then(res => res.json()).then(data => ({ index, data }));
     });
 
     try {
@@ -1103,7 +1107,7 @@ export default function AppPrototype({ onViewModeChange }) {
           const { index, data } = res;
           const current = nextList[index];
 
-          const desiredTheta = bearingToGoal(data.x, data.y, currentGoal);
+          const desiredTheta = bearingToGoal(data.x, data.y);
           const thetaErr = normalizeAngle(desiredTheta - data.theta);
           const rThetaVal = data.r_theta;
           const rDVal = data.r_d;
@@ -1115,20 +1119,11 @@ export default function AppPrototype({ onViewModeChange }) {
           const deltaTheta = Math.abs(data.theta - current.theta);
           const nextJerk = current.jerk + deltaTheta;
 
-          let rx = data.x;
-          let ry = data.y;
-          let rtheta = data.theta;
-          if (controlNoiseRef.current > 0) {
-            rx = Math.max(10, Math.min(CANVAS_WIDTH - 10, rx + (Math.random() - 0.5) * controlNoiseRef.current));
-            ry = Math.max(10, Math.min(CANVAS_HEIGHT - 10, ry + (Math.random() - 0.5) * controlNoiseRef.current));
-            rtheta = normalizeAngle(rtheta + (Math.random() - 0.5) * (controlNoiseRef.current * 0.05));
-          }
-
           nextList[index] = {
             ...current,
-            x: rx,
-            y: ry,
-            theta: rtheta,
+            x: data.x,
+            y: data.y,
+            theta: data.theta,
             prevDistance: data.distance,
             status: data.status,
             stepCount: current.stepCount + 1,
@@ -1161,7 +1156,7 @@ export default function AppPrototype({ onViewModeChange }) {
           const { index, data } = res;
           const current = nextList[index];
 
-          const desiredTheta = bearingToGoal(data.x, data.y, currentGoal);
+          const desiredTheta = bearingToGoal(data.x, data.y);
           const thetaErr = normalizeAngle(desiredTheta - data.theta);
           const rThetaVal = data.r_theta;
           const rDVal = data.r_d;
@@ -1173,20 +1168,11 @@ export default function AppPrototype({ onViewModeChange }) {
           const deltaThetaB = Math.abs(data.theta - current.theta);
           const nextJerk = current.jerk + deltaThetaB;
 
-          let rx = data.x;
-          let ry = data.y;
-          let rtheta = data.theta;
-          if (controlNoiseRef.current > 0) {
-            rx = Math.max(10, Math.min(CANVAS_WIDTH - 10, rx + (Math.random() - 0.5) * controlNoiseRef.current));
-            ry = Math.max(10, Math.min(CANVAS_HEIGHT - 10, ry + (Math.random() - 0.5) * controlNoiseRef.current));
-            rtheta = normalizeAngle(rtheta + (Math.random() - 0.5) * (controlNoiseRef.current * 0.05));
-          }
-
           nextList[index] = {
             ...current,
-            x: rx,
-            y: ry,
-            theta: rtheta,
+            x: data.x,
+            y: data.y,
+            theta: data.theta,
             prevDistance: data.distance,
             status: data.status,
             stepCount: current.stepCount + 1,
@@ -1259,8 +1245,8 @@ export default function AppPrototype({ onViewModeChange }) {
           id: Date.now(),
           timestamp: new Date().toLocaleTimeString(),
           layout: presetName,
-          advStats: nextAdvanced.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk, pathHistory: [...r.pathHistory, { x: r.x, y: r.y }] })),
-          baseStats: nextBaseline.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk, pathHistory: [...r.pathHistory, { x: r.x, y: r.y }] }))
+          advStats: nextAdvanced.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk })),
+          baseStats: nextBaseline.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk }))
         };
         setSessionLogs(prev => [newLog, ...prev]);
       }
@@ -1329,8 +1315,8 @@ export default function AppPrototype({ onViewModeChange }) {
   const isNearStartOrGoal = (rect) => {
     const pad = 45;
     const startRangeX = [50 - pad, 50 + pad];
-    const goalRangeX = [goalPos.x - pad, goalPos.x + pad];
-    const goalRangeY = [goalPos.y - pad, goalPos.y + pad];
+    const goalRangeX = [GOAL.x - pad, GOAL.x + pad];
+    const goalRangeY = [GOAL.y - pad, GOAL.y + pad];
 
     const intersectStart = rect.x < startRangeX[1] && rect.x + rect.width > startRangeX[0];
     const intersectGoal = rect.x < goalRangeX[1] && rect.x + rect.width > goalRangeX[0] &&
@@ -1574,23 +1560,6 @@ export default function AppPrototype({ onViewModeChange }) {
   const paretoChartOptions = {
     responsive: true,
     maintainAspectRatio: false,
-    onHover: (event, activeElements) => {
-      if (activeElements && activeElements.length > 0) {
-        const { datasetIndex, index } = activeElements[0];
-        const list = datasetIndex === 0 
-          ? sessionLogs.flatMap(log => log.advStats)
-          : sessionLogs.flatMap(log => log.baseStats);
-        
-        const targetStat = list[index];
-        if (targetStat && targetStat.pathHistory) {
-          setHoveredPath(targetStat.pathHistory);
-        } else {
-          setHoveredPath(null);
-        }
-      } else {
-        setHoveredPath(null);
-      }
-    },
     plugins: {
       legend: { display: true, labels: { color: COLORS.textDim, boxWidth: 10, font: { size: 10 } } },
       tooltip: {
@@ -1887,6 +1856,13 @@ export default function AppPrototype({ onViewModeChange }) {
                   >
                     U-Trap Failzone
                   </button>
+                  <button
+                    onClick={() => handleApplyPreset("maze")}
+                    className="p-2 rounded border border-gray-850 hover:bg-gray-800 text-left transition-colors cursor-pointer text-amber-400 col-span-2"
+                    style={{ borderColor: presetName === "maze" ? COLORS.robot : "transparent" }}
+                  >
+                    ⚡ Procedural Maze
+                  </button>
                 </div>
 
                 <div className="pt-2 border-t border-gray-850 space-y-2 text-xs font-mono">
@@ -1959,68 +1935,14 @@ export default function AppPrototype({ onViewModeChange }) {
                     />
                   </div>
 
-                  <div className="flex items-center justify-between pt-2 border-t border-gray-850">
-                    <span className="text-gray-400">Moving Target (Goal):</span>
-                    <input
-                      type="checkbox"
-                      checked={movingGoal}
-                      onChange={(e) => {
-                        setMovingGoal(e.target.checked);
-                        if (!e.target.checked) {
-                          setGoalPos({ x: 520, y: 200 });
-                        }
-                      }}
-                      className="w-4 h-4 cursor-pointer accent-emerald-500 rounded"
-                    />
-                  </div>
-
                   <div className="flex items-center justify-between pt-1">
-                    <span className="text-gray-400">Mouse Follow Goal:</span>
+                    <span className="text-gray-400">Cooperative Collision Avoidance:</span>
                     <input
                       type="checkbox"
-                      checked={goalFollowMouse}
-                      onChange={(e) => {
-                        setGoalFollowMouse(e.target.checked);
-                        if (!e.target.checked) {
-                          setGoalPos({ x: 520, y: 200 });
-                        }
-                      }}
+                      checked={cooperativeNavigation}
+                      onChange={(e) => setCooperativeNavigation(e.target.checked)}
                       className="w-4 h-4 cursor-pointer accent-cyan-500 rounded"
                     />
-                  </div>
-
-                  <div className="pt-2 border-t border-gray-850 space-y-2">
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-500">Control / Actuator Noise:</span>
-                        <span className="text-amber-400 font-bold">{controlNoise} px</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="10"
-                        step="1"
-                        value={controlNoise}
-                        onChange={(e) => setControlNoise(Number(e.target.value))}
-                        className="w-full accent-amber-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                      />
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-gray-500">LiDAR Sensor Noise:</span>
-                        <span className="text-amber-400 font-bold">{sensorNoise} px</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="30"
-                        step="2"
-                        value={sensorNoise}
-                        onChange={(e) => setSensorNoise(Number(e.target.value))}
-                        className="w-full accent-amber-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                      />
-                    </div>
                   </div>
                 </div>
               </div>
@@ -2069,45 +1991,6 @@ export default function AppPrototype({ onViewModeChange }) {
                     />
                     <p className="text-[10px] text-gray-500">
                       Penalties trigger cautious paths around blocks.
-                    </p>
-                  </div>
-                  {/* Slider 3: Progress Weight (W_d) */}
-                  <div className="space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Progress Weight (W_d):</span>
-                      <span className="text-cyan-400 font-bold">x{wD.toFixed(1)}</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0.1"
-                      max="5.0"
-                      step="0.1"
-                      value={wD}
-                      onChange={(e) => { setWD(Number(e.target.value)); handleReset(); }}
-                      className="w-full accent-cyan-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                    />
-                    <p className="text-[10px] text-gray-500">
-                      Multiplies the distance progress reward component.
-                    </p>
-                  </div>
-
-                  {/* Slider 4: Alignment Weight (W_theta) */}
-                  <div className="space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Alignment Weight (W_theta):</span>
-                      <span className="text-amber-400 font-bold">x{wTheta.toFixed(1)}</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0.1"
-                      max="5.0"
-                      step="0.1"
-                      value={wTheta}
-                      onChange={(e) => { setWTheta(Number(e.target.value)); handleReset(); }}
-                      className="w-full accent-amber-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
-                    />
-                    <p className="text-[10px] text-gray-500">
-                      Multiplies the bearing heading alignment component.
                     </p>
                   </div>
                 </div>
@@ -2170,10 +2053,10 @@ export default function AppPrototype({ onViewModeChange }) {
                     <tr>
                       <td className="py-2.5 text-gray-400">Path Efficiency</td>
                       <td className="py-2.5 text-right text-emerald-400 font-semibold">
-                        {(robotSelected.stepCount > 0 ? (Math.hypot(goalPos.x - startPositions[selectedRobotIndex].x, goalPos.y - startPositions[selectedRobotIndex].y) / robotSelected.stepCount) : 0).toFixed(3)}
+                        {(robotSelected.stepCount > 0 ? (Math.hypot(GOAL.x - startPositions[selectedRobotIndex].x, GOAL.y - startPositions[selectedRobotIndex].y) / robotSelected.stepCount) : 0).toFixed(3)}
                       </td>
                       <td className="py-2.5 text-right text-orange-400 font-semibold">
-                        {(robotSelectedB.stepCount > 0 ? (Math.hypot(goalPos.x - startPositions[selectedRobotIndex].x, goalPos.y - startPositions[selectedRobotIndex].y) / robotSelectedB.stepCount) : 0).toFixed(3)}
+                        {(robotSelectedB.stepCount > 0 ? (Math.hypot(GOAL.x - startPositions[selectedRobotIndex].x, GOAL.y - startPositions[selectedRobotIndex].y) / robotSelectedB.stepCount) : 0).toFixed(3)}
                       </td>
                     </tr>
                   </tbody>
@@ -2256,8 +2139,103 @@ export default function AppPrototype({ onViewModeChange }) {
                     </div>
                   </div>
 
+                  {/* Interactive D3QN Neural Network Activations Diagram */}
+                  <div className="p-3 bg-[#0b0f12] rounded border border-gray-800 flex flex-col justify-between">
+                    <div>
+                      <h4 className="text-gray-400 font-semibold border-b border-gray-850 pb-1 mb-2">Network Activations</h4>
+                      <p className="text-[10px] text-gray-500">Live Dueling DQN neural layers & active policy graph path.</p>
+                    </div>
+                    
+                    <div className="mt-3 flex justify-center items-center">
+                      <svg width="180" height="130" viewBox="0 0 180 130" className="overflow-visible">
+                        {/* Define connections */}
+                        {/* Hidden Layer connections */}
+                        {/* State Inputs -> Hidden Layer 1 */}
+                        {[30, 65, 100].map((yIn) => 
+                          [20, 50, 80, 110].map((yH1) => {
+                            const isWinning = robots[selectedRobotIndex] && robots[selectedRobotIndex].status === "navigating";
+                            return (
+                              <line
+                                key={`in-h1-${yIn}-${yH1}`}
+                                x1="20" y1={yIn} x2="70" y2={yH1}
+                                stroke={isWinning ? "rgba(34, 211, 238, 0.22)" : "rgba(75, 85, 99, 0.15)"}
+                                strokeWidth="1"
+                              />
+                            );
+                          })
+                        )}
+                        {/* Hidden Layer 1 -> Hidden Layer 2 */}
+                        {[20, 50, 80, 110].map((yH1) => 
+                          [35, 65, 95].map((yH2) => {
+                            const isWinning = robots[selectedRobotIndex] && robots[selectedRobotIndex].status === "navigating";
+                            return (
+                              <line
+                                key={`h1-h2-${yH1}-${yH2}`}
+                                x1="70" y1={yH1} x2="120" y2={yH2}
+                                stroke={isWinning ? "rgba(34, 211, 238, 0.25)" : "rgba(75, 85, 99, 0.15)"}
+                                strokeWidth="1"
+                              />
+                            );
+                          })
+                        )}
+                        {/* Hidden Layer 2 -> Dueling Branch Split (Value & Advantages) */}
+                        {/* H2 -> Value (V) at x=160, y=30 */}
+                        {[35, 65, 95].map((yH2) => {
+                          const isWinning = robots[selectedRobotIndex] && robots[selectedRobotIndex].status === "navigating";
+                          return (
+                            <line
+                              key={`h2-v-${yH2}`}
+                              x1="120" y1={yH2} x2="160" y2="30"
+                              stroke={isWinning ? "rgba(79, 214, 122, 0.35)" : "rgba(75, 85, 99, 0.15)"}
+                              strokeWidth="1.2"
+                            />
+                          );
+                        })}
+                        {/* H2 -> Advantages (A) at x=160, y=90 */}
+                        {[35, 65, 95].map((yH2) => {
+                          const isWinning = robots[selectedRobotIndex] && robots[selectedRobotIndex].status === "navigating";
+                          return (
+                            <line
+                              key={`h2-a-${yH2}`}
+                              x1="120" y1={yH2} x2="160" y2="90"
+                              stroke={isWinning ? "rgba(244, 114, 182, 0.35)" : "rgba(75, 85, 99, 0.15)"}
+                              strokeWidth="1.2"
+                            />
+                          );
+                        })}
+
+                        {/* Nodes drawing */}
+                        {/* Layer 1: Inputs */}
+                        <circle cx="20" cy="30" r="5.5" fill="rgba(34, 211, 238, 0.85)" className="animate-pulse" />
+                        <text x="18" y="22" fill="#9ca3af" fontSize="7" textAnchor="middle">State</text>
+                        <circle cx="20" cy="65" r="5.5" fill="rgba(34, 211, 238, 0.85)" className="animate-pulse" />
+                        <text x="18" y="57" fill="#9ca3af" fontSize="7" textAnchor="middle">LiDAR</text>
+                        <circle cx="20" cy="100" r="5.5" fill="rgba(34, 211, 238, 0.85)" className="animate-pulse" />
+                        <text x="18" y="92" fill="#9ca3af" fontSize="7" textAnchor="middle">Goal</text>
+
+                        {/* Layer 2: Hidden 1 */}
+                        {[20, 50, 80, 110].map((yVal, idx) => (
+                          <circle key={idx} cx="70" cy={yVal} r="4.5" fill="#1e293b" stroke="rgba(34, 211, 238, 0.6)" strokeWidth="1" />
+                        ))}
+
+                        {/* Layer 3: Hidden 2 */}
+                        {[35, 65, 95].map((yVal, idx) => (
+                          <circle key={idx} cx="120" cy={yVal} r="4.5" fill="#1e293b" stroke="rgba(34, 211, 238, 0.6)" strokeWidth="1" />
+                        ))}
+
+                        {/* Layer 4: Dueling Nodes V & A */}
+                        {/* Value V(s) */}
+                        <circle cx="160" cy="30" r="7.5" fill="#1e293b" stroke="rgba(79, 214, 122, 0.95)" strokeWidth="1.5" />
+                        <text x="160" y="33" fill="#4fd67a" fontSize="8" fontWeight="bold" textAnchor="middle">V</text>
+                        {/* Advantage Stream A(s,a) */}
+                        <circle cx="160" cy="90" r="7.5" fill="#1e293b" stroke="rgba(244, 114, 182, 0.95)" strokeWidth="1.5" />
+                        <text x="160" y="93" fill="#f472b6" fontSize="8" fontWeight="bold" textAnchor="middle">A</text>
+                      </svg>
+                    </div>
+                  </div>
+
                   {/* Advantage Stream A(s,a) */}
-                  <div className="sm:col-span-2 p-3 bg-[#0b0f12] rounded border border-gray-800 space-y-2">
+                  <div className="p-3 bg-[#0b0f12] rounded border border-gray-800 space-y-2">
                     <h4 className="text-gray-400 font-semibold border-b border-gray-850 pb-1">Advantage stream A(s, a)</h4>
                     <p className="text-[10px] text-gray-500 mb-2">Evaluates steer action advantages.</p>
                     

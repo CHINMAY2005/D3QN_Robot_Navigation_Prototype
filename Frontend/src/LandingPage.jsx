@@ -160,11 +160,11 @@ export default function LandingPage({ onViewModeChange }) {
       {/* Navigation Header */}
       <header className="relative z-10 w-full max-w-7xl mx-auto px-6 py-6 flex items-center justify-between border-b border-white/[0.03]">
         <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-lg bg-gradient-to-tr from-cyan-400 to-violet-600 flex items-center justify-center font-black text-sm tracking-wider text-[#07090b] shadow-[0_0_15px_rgba(6,182,212,0.4)]">
-            D3
+          <div className="h-10 px-2 rounded-lg bg-gradient-to-tr from-cyan-400 to-violet-600 flex items-center justify-center font-black text-sm tracking-wider text-[#07090b] shadow-[0_0_15px_rgba(6,182,212,0.4)]">
+            D3QN
           </div>
           <div>
-            <span className="font-bold tracking-widest uppercase text-sm block">D3QN-NAV</span>
+            <span className="font-bold tracking-widest uppercase text-sm block">D3QN</span>
             <span className="text-[10px] text-gray-500 tracking-wider uppercase block">Autonomous Prototype</span>
           </div>
         </div>

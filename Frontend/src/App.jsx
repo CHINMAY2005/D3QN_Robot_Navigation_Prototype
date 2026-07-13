@@ -63,7 +63,7 @@ const COLORS = {
 // Raycasting & Spatial Sensing (LiDAR)
 // --------------------------------------------------------------------------
 
-function calculateLidarRanges(x, y, theta, obstaclesList, numRays = 8, fovDeg = 360, maxRange = 300) {
+function calculateLidarRanges(x, y, theta, obstaclesList, numRays = 8, fovDeg = 360, maxRange = 300, noise = 0) {
   const ranges = [];
   const fovRad = (fovDeg * Math.PI) / 180;
   const startAngle = fovDeg === 360 ? 0 : -fovRad / 2;
@@ -109,7 +109,11 @@ function calculateLidarRanges(x, y, theta, obstaclesList, numRays = 8, fovDeg = 
       }
     });
 
-    ranges.push(Math.min(tMin, maxRange));
+    let finalRange = Math.min(tMin, maxRange);
+    if (noise > 0) {
+      finalRange = Math.max(0, Math.min(maxRange, finalRange + (Math.random() - 0.5) * noise));
+    }
+    ranges.push(finalRange);
   }
 
   return ranges;
@@ -410,6 +414,10 @@ export default function App() {
   const [wTheta, setWTheta] = useState(1.0);
   const [movingGoal, setMovingGoal] = useState(false);
   const [goalPos, setGoalPos] = useState({ x: 520, y: 200 });
+  const [controlNoise, setControlNoise] = useState(0);
+  const [sensorNoise, setSensorNoise] = useState(0);
+  const [goalFollowMouse, setGoalFollowMouse] = useState(false);
+  const [hoveredPath, setHoveredPath] = useState(null);
   const [sessionLogs, setSessionLogs] = useState([]);
   const sessionLogsRef = useRef(sessionLogs);
   useEffect(() => { sessionLogsRef.current = sessionLogs; }, [sessionLogs]);
@@ -511,6 +519,9 @@ export default function App() {
   const goalPosRef = useRef(goalPos);
   const momentumRef = useRef(momentum);
   const driftRef = useRef(drift);
+  const controlNoiseRef = useRef(controlNoise);
+  const sensorNoiseRef = useRef(sensorNoise);
+  const goalFollowMouseRef = useRef(goalFollowMouse);
 
   // Initialize robot state lists
   const initializeRobots = useCallback(() => {
@@ -589,6 +600,9 @@ export default function App() {
   useEffect(() => { goalPosRef.current = goalPos; }, [goalPos]);
   useEffect(() => { momentumRef.current = momentum; }, [momentum]);
   useEffect(() => { driftRef.current = drift; }, [drift]);
+  useEffect(() => { controlNoiseRef.current = controlNoise; }, [controlNoise]);
+  useEffect(() => { sensorNoiseRef.current = sensorNoise; }, [sensorNoise]);
+  useEffect(() => { goalFollowMouseRef.current = goalFollowMouse; }, [goalFollowMouse]);
 
   // Apply layout presets
   const handleApplyPreset = (name) => {
@@ -733,8 +747,8 @@ export default function App() {
           const dxG = goalPos.x - x;
           const dyG = goalPos.y - y;
           const distG = Math.hypot(dxG, dyG);
-          let forceX = distG > 0 ? (dxG / distG) * 1.5 : 0;
-          let forceY = distG > 0 ? (dyG / distG) * 1.5 : 0;
+          let forceX = distG > 0 ? (dxG / distG) * (1.5 * wD) : 0;
+          let forceY = distG > 0 ? (dyG / distG) * (1.5 * wD) : 0;
 
           // 2. Repulsion from obstacles
           obstacles.forEach((obs) => {
@@ -811,6 +825,22 @@ export default function App() {
     ctx.lineWidth = 4;
     ctx.stroke();
 
+    // Draw Hovered Pareto Path Trail (glowing overlay)
+    if (hoveredPath && hoveredPath.length > 0) {
+      ctx.beginPath();
+      ctx.moveTo(hoveredPath[0].x, hoveredPath[0].y);
+      for (let i = 1; i < hoveredPath.length; i++) {
+        ctx.lineTo(hoveredPath[i].x, hoveredPath[i].y);
+      }
+      ctx.strokeStyle = "rgba(245, 158, 11, 0.75)";
+      ctx.lineWidth = 4;
+      ctx.shadowColor = "rgba(245, 158, 11, 0.9)";
+      ctx.shadowBlur = 10;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.shadowColor = "transparent";
+    }
+
     // Draw each robot in the list
     robotStatesList.forEach((robotState, rIdx) => {
       const isSelected = rIdx === selectedRobotIndex;
@@ -834,7 +864,7 @@ export default function App() {
 
       // Draw LiDAR range beams for selected robot
       if (showLidar && isSelected) {
-        const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, obstacles, lidarRays, lidarFov, lidarRange);
+        const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, obstacles, lidarRays, lidarFov, lidarRange, sensorNoise);
         const fovRad = (lidarFov * Math.PI) / 180;
         const startAngle = lidarFov === 360 ? 0 : -fovRad / 2;
         const angleStep = lidarFov === 360 ? (Math.PI * 2) / lidarRays : fovRad / (lidarRays > 1 ? lidarRays - 1 : 1);
@@ -932,7 +962,7 @@ export default function App() {
       ctx.fillText(`R${rIdx + 1}`, robotState.x - 6, robotState.y - 14);
     });
 
-  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos, lidarRays, showPotentialField, showHeatmap, densityGrid, collisionHistory]);
+  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos, lidarRays, showPotentialField, showHeatmap, densityGrid, collisionHistory, hoveredPath]);
 
   // Redraw on state shifts
   useEffect(() => {
@@ -940,7 +970,7 @@ export default function App() {
       drawScene(canvasRef.current, robots, COLORS.robot);
       drawScene(canvasRefB.current, robotsB, COLORS.robotB);
     }
-  }, [robots, robotsB, obstacles, drawScene, activeTab, viewMode, showPotentialField, showHeatmap, densityGrid, collisionHistory]);
+  }, [robots, robotsB, obstacles, drawScene, activeTab, viewMode, showPotentialField, showHeatmap, densityGrid, collisionHistory, hoveredPath]);
 
   // Drag and Drop coordinates mapping
   const getCanvasMousePos = (e, canvas) => {
@@ -980,6 +1010,10 @@ export default function App() {
 
   const handleCanvasMouseMove = (e, canvas) => {
     const pos = getCanvasMousePos(e, canvas);
+
+    if (goalFollowMouse) {
+      setGoalPos({ x: pos.x, y: pos.y });
+    }
 
     if (isDrawingMode) {
       if (!drawingStart) return;
@@ -1251,11 +1285,20 @@ export default function App() {
         const deltaOmega = Math.abs(omega - current.lastOmega);
         const nextJerk = current.jerk + deltaOmega;
 
+        let rx = data.x;
+        let ry = data.y;
+        let rtheta = data.theta;
+        if (controlNoiseRef.current > 0) {
+          rx = Math.max(10, Math.min(CANVAS_WIDTH - 10, rx + (Math.random() - 0.5) * controlNoiseRef.current));
+          ry = Math.max(10, Math.min(CANVAS_HEIGHT - 10, ry + (Math.random() - 0.5) * controlNoiseRef.current));
+          rtheta = normalizeAngle(rtheta + (Math.random() - 0.5) * (controlNoiseRef.current * 0.05));
+        }
+
         nextAdvanced[index] = {
           ...current,
-          x: data.x,
-          y: data.y,
-          theta: data.theta,
+          x: rx,
+          y: ry,
+          theta: rtheta,
           prevDistance: data.distance,
           status: data.status,
           stepCount: current.stepCount + 1,
@@ -1300,11 +1343,20 @@ export default function App() {
         const deltaOmega = Math.abs(omega - current.lastOmega);
         const nextJerk = current.jerk + deltaOmega;
 
+        let rx = data.x;
+        let ry = data.y;
+        let rtheta = data.theta;
+        if (controlNoiseRef.current > 0) {
+          rx = Math.max(10, Math.min(CANVAS_WIDTH - 10, rx + (Math.random() - 0.5) * controlNoiseRef.current));
+          ry = Math.max(10, Math.min(CANVAS_HEIGHT - 10, ry + (Math.random() - 0.5) * controlNoiseRef.current));
+          rtheta = normalizeAngle(rtheta + (Math.random() - 0.5) * (controlNoiseRef.current * 0.05));
+        }
+
         nextBaseline[index] = {
           ...current,
-          x: data.x,
-          y: data.y,
-          theta: data.theta,
+          x: rx,
+          y: ry,
+          theta: rtheta,
           prevDistance: data.distance,
           status: data.status,
           stepCount: current.stepCount + 1,
@@ -1381,8 +1433,8 @@ export default function App() {
           id: Date.now(),
           timestamp: new Date().toLocaleTimeString(),
           layout: presetName,
-          advStats: nextAdvanced.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk })),
-          baseStats: nextBaseline.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk }))
+          advStats: nextAdvanced.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk, pathHistory: [...r.pathHistory, { x: r.x, y: r.y }] })),
+          baseStats: nextBaseline.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk, pathHistory: [...r.pathHistory, { x: r.x, y: r.y }] }))
         };
         setSessionLogs(prev => [newLog, ...prev]);
 
@@ -1753,6 +1805,23 @@ export default function App() {
   const paretoChartOptions = {
     responsive: true,
     maintainAspectRatio: false,
+    onHover: (event, activeElements) => {
+      if (activeElements && activeElements.length > 0) {
+        const { datasetIndex, index } = activeElements[0];
+        const list = datasetIndex === 0 
+          ? sessionLogs.flatMap(log => log.advStats)
+          : sessionLogs.flatMap(log => log.baseStats);
+        
+        const targetStat = list[index];
+        if (targetStat && targetStat.pathHistory) {
+          setHoveredPath(targetStat.pathHistory);
+        } else {
+          setHoveredPath(null);
+        }
+      } else {
+        setHoveredPath(null);
+      }
+    },
     plugins: {
       legend: { display: true, labels: { color: COLORS.textDim, boxWidth: 10, font: { size: 10 } } },
       tooltip: {
@@ -2240,6 +2309,55 @@ export default function App() {
                       }}
                       className="w-4 h-4 cursor-pointer accent-emerald-500 rounded"
                     />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-gray-400">Mouse Follow Goal:</span>
+                    <input
+                      type="checkbox"
+                      checked={goalFollowMouse}
+                      onChange={(e) => {
+                        setGoalFollowMouse(e.target.checked);
+                        if (!e.target.checked) {
+                          setGoalPos({ x: 520, y: 200 });
+                        }
+                      }}
+                      className="w-4 h-4 cursor-pointer accent-cyan-500 rounded"
+                    />
+                  </div>
+
+                  <div className="pt-2 border-t border-gray-850 space-y-2">
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-gray-500">Control / Actuator Noise:</span>
+                        <span className="text-amber-400 font-bold">{controlNoise} px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="10"
+                        step="1"
+                        value={controlNoise}
+                        onChange={(e) => setControlNoise(Number(e.target.value))}
+                        className="w-full accent-amber-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-gray-500">LiDAR Sensor Noise:</span>
+                        <span className="text-amber-400 font-bold">{sensorNoise} px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="30"
+                        step="2"
+                        value={sensorNoise}
+                        onChange={(e) => setSensorNoise(Number(e.target.value))}
+                        className="w-full accent-amber-500 cursor-pointer bg-gray-800 h-1 rounded-lg"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>

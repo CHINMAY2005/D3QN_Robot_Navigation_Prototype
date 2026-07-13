@@ -13,7 +13,11 @@ Run with:
 """
 
 import math
-from typing import Literal
+import json
+import os
+from datetime import datetime
+from threading import Lock
+from typing import Literal, Union
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -281,3 +285,68 @@ def step(request: StepRequest) -> StepResponse:
 def health_check():
     """Simple health check / root endpoint."""
     return {"status": "ok", "message": "Robot Navigation RL Environment is running."}
+
+
+# --------------------------------------------------------------------------
+# Agent Running Records Persistent Storage Endpoints
+# --------------------------------------------------------------------------
+
+RECORDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_running_records.json")
+file_lock = Lock()
+
+class RunningRecord(BaseModel):
+    id: str | None = Field(default=None, description="Unique record identifier")
+    timestamp: str | None = Field(default=None, description="ISO-8601 timestamp")
+    episode: int = Field(..., description="Episode number")
+    model: str = Field(..., description="Model name (e.g. D3QN, DQN Baseline)")
+    reward: float = Field(..., description="Cumulative episode reward")
+    steps: int = Field(..., description="Total steps in the episode")
+    status: str = Field(..., description="Run outcome status (e.g. SUCCESS, COLLISION, TIMEOUT)")
+    loss: float = Field(..., description="Average loss at the end of the episode")
+    epsilon: float = Field(..., description="Exploration rate (epsilon) at the end of the episode")
+
+@app.get("/records")
+def get_records():
+    """Retrieve all stored agent running records."""
+    with file_lock:
+        if not os.path.exists(RECORDS_FILE):
+            return []
+        try:
+            with open(RECORDS_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            return {"error": f"Failed to read records: {str(e)}"}
+
+@app.post("/records")
+def create_record(record: Union[RunningRecord, list[RunningRecord]]):
+    """Store one or more agent running records."""
+    with file_lock:
+        input_records = record if isinstance(record, list) else [record]
+
+        records = []
+        if os.path.exists(RECORDS_FILE):
+            try:
+                with open(RECORDS_FILE, "r") as f:
+                    records = json.load(f)
+            except Exception:
+                # If file is corrupted or empty, start with empty list
+                records = []
+
+        now_str = datetime.utcnow().isoformat() + "Z"
+        base_timestamp = int(datetime.utcnow().timestamp() * 1000)
+
+        for i, rec in enumerate(input_records):
+            # If standard RunningRecord model, convert to dict. Otherwise if dict already, use it.
+            rec_dict = rec.dict() if hasattr(rec, "dict") else dict(rec)
+            if not rec_dict.get("timestamp"):
+                rec_dict["timestamp"] = now_str
+            if not rec_dict.get("id"):
+                rec_dict["id"] = f"run-{base_timestamp}-{i}"
+            records.append(rec_dict)
+
+        try:
+            with open(RECORDS_FILE, "w") as f:
+                json.dump(records, f, indent=2)
+            return {"status": "success", "count": len(input_records)}
+        except Exception as e:
+            return {"error": f"Failed to write records: {str(e)}"}

@@ -411,6 +411,56 @@ export default function App() {
   const [movingGoal, setMovingGoal] = useState(false);
   const [goalPos, setGoalPos] = useState({ x: 520, y: 200 });
   const [sessionLogs, setSessionLogs] = useState([]);
+  const sessionLogsRef = useRef(sessionLogs);
+  useEffect(() => { sessionLogsRef.current = sessionLogs; }, [sessionLogs]);
+
+  const [logViewMode, setLogViewMode] = useState("session"); // "session" | "persistent"
+  const [persistentRecords, setPersistentRecords] = useState([]);
+  const [syncingRecords, setSyncingRecords] = useState(false);
+  const [syncError, setSyncError] = useState(null);
+  const accumulatedTrainingRecordsRef = useRef([]);
+
+  const fetchPersistentRecords = useCallback(async () => {
+    setSyncingRecords(true);
+    setSyncError(null);
+    try {
+      const recordsUrl = API_URL.replace("/step", "/records");
+      const res = await fetch(recordsUrl);
+      if (!res.ok) throw new Error("HTTP error " + res.status);
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setPersistentRecords(data.slice().reverse()); // latest first
+      } else {
+        setPersistentRecords([]);
+      }
+    } catch (err) {
+      console.error(err);
+      setSyncError("Failed to fetch persistent records from backend");
+    } finally {
+      setSyncingRecords(false);
+    }
+  }, []);
+
+  const savePersistentRecord = useCallback(async (record) => {
+    try {
+      const recordsUrl = API_URL.replace("/step", "/records");
+      const res = await fetch(recordsUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(record)
+      });
+      if (res.ok) {
+        fetchPersistentRecords();
+      }
+    } catch (err) {
+      console.error("Failed to save persistent record:", err);
+    }
+  }, [fetchPersistentRecords]);
+
+  useEffect(() => {
+    fetchPersistentRecords();
+  }, [fetchPersistentRecords]);
+
   const [lidarFov, setLidarFov] = useState(360);
   const [lidarRange, setLidarRange] = useState(300);
   const [momentum, setMomentum] = useState(0.0);
@@ -1335,6 +1385,35 @@ export default function App() {
           baseStats: nextBaseline.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk }))
         };
         setSessionLogs(prev => [newLog, ...prev]);
+
+        // Post to backend persistent records in bulk
+        const recordsToSave = [];
+        nextAdvanced.forEach((r, idx) => {
+          recordsToSave.push({
+            episode: (sessionLogsRef.current?.length || 0) + 1,
+            model: `D3QN (R${idx + 1})`,
+            reward: parseFloat(r.cumulativeReward.toFixed(1)),
+            steps: r.stepCount,
+            status: r.status.toUpperCase(),
+            loss: 0.0,
+            epsilon: 0.0
+          });
+        });
+        nextBaseline.forEach((r, idx) => {
+          recordsToSave.push({
+            episode: (sessionLogsRef.current?.length || 0) + 1,
+            model: `DQN Baseline (R${idx + 1})`,
+            reward: parseFloat(r.cumulativeReward.toFixed(1)),
+            steps: r.stepCount,
+            status: r.status.toUpperCase(),
+            loss: 0.0,
+            epsilon: 0.0
+          });
+        });
+
+        if (recordsToSave.length > 0) {
+          savePersistentRecord(recordsToSave);
+        }
       }
 
       setErrorMsg(null);
@@ -1453,7 +1532,11 @@ export default function App() {
         clearInterval(trainingIntervalRef.current);
         trainingIntervalRef.current = null;
       }
+      if (accumulatedTrainingRecordsRef.current.length > 0) {
+        savePersistentRecord(accumulatedTrainingRecordsRef.current);
+      }
     } else {
+      accumulatedTrainingRecordsRef.current = [];
       setIsTraining(true);
       setTrainingEpisode(0);
       setTrainingLogs([]);
@@ -1516,6 +1599,30 @@ export default function App() {
           const statusStrB = dqnRew > 300 ? "SUCCESS" : dqnRew < -50 ? "COLLISION" : "TIMEOUT";
           const logLine = `[Ep ${nextEp}/100] D3QN: R=${d3qnRew.toFixed(1)} (${statusStr}) | DQN: R=${dqnRew.toFixed(1)} (${statusStrB}) | Loss=${loss} | Eps=${epsilon}`;
           setTrainingLogs(logs => [...logs, logLine]);
+
+          // Accumulate training records
+          accumulatedTrainingRecordsRef.current.push({
+            episode: nextEp,
+            model: "D3QN (Training)",
+            reward: parseFloat(d3qnRew.toFixed(1)),
+            steps: Math.round(d3qnStep),
+            status: statusStr,
+            loss: parseFloat(loss),
+            epsilon: parseFloat(epsilon)
+          });
+          accumulatedTrainingRecordsRef.current.push({
+            episode: nextEp,
+            model: "DQN Baseline (Training)",
+            reward: parseFloat(dqnRew.toFixed(1)),
+            steps: Math.round(dqnStep),
+            status: statusStrB,
+            loss: parseFloat(loss),
+            epsilon: parseFloat(epsilon)
+          });
+
+          if (nextEp >= 100) {
+            savePersistentRecord(accumulatedTrainingRecordsRef.current);
+          }
 
           return nextEp;
         });
@@ -2488,19 +2595,52 @@ export default function App() {
                   <h3 className="text-xs uppercase tracking-wider text-gray-400 font-bold">
                     4. Session Run History Logs (Completed Runs)
                   </h3>
-                  <button
-                    onClick={() => setSessionLogs([])}
-                    className="px-2 py-1 text-[10px] uppercase font-bold tracking-wider rounded border border-red-900 bg-red-950/20 text-red-400 hover:bg-red-900/30 transition-all cursor-pointer"
-                  >
-                    Clear Logs
-                  </button>
+                  <div className="flex items-center space-x-3">
+                    <button
+                      onClick={() => setLogViewMode("session")}
+                      className={`px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider rounded border transition-all cursor-pointer ${
+                        logViewMode === "session"
+                          ? "border-cyan-500 bg-cyan-950/20 text-cyan-400"
+                          : "border-gray-800 bg-transparent text-gray-400 hover:border-gray-700 hover:text-gray-300"
+                      }`}
+                    >
+                      Session Runs
+                    </button>
+                    <button
+                      onClick={() => {
+                        setLogViewMode("persistent");
+                        fetchPersistentRecords();
+                      }}
+                      className={`px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider rounded border transition-all cursor-pointer ${
+                        logViewMode === "persistent"
+                          ? "border-amber-500 bg-amber-950/20 text-amber-400"
+                          : "border-gray-800 bg-transparent text-gray-400 hover:border-gray-700 hover:text-gray-300"
+                      }`}
+                    >
+                      Disk Logs (Persistent)
+                    </button>
+                    {syncingRecords && (
+                      <span className="text-[10px] text-amber-500 animate-pulse font-mono">
+                        SYNCING...
+                      </span>
+                    )}
+                    {logViewMode === "session" && (
+                      <button
+                        onClick={() => setSessionLogs([])}
+                        className="px-2 py-1 text-[10px] uppercase font-bold tracking-wider rounded border border-red-900 bg-red-950/20 text-red-400 hover:bg-red-900/30 transition-all cursor-pointer"
+                      >
+                        Clear Logs
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                {sessionLogs.length === 0 ? (
-                  <div className="py-8 text-center text-xs text-gray-500 font-mono">
-                    No completed runs recorded in this session. Run the simulation to completion (all robots reach target or collide) to log metrics.
-                  </div>
-                ) : (
+                {logViewMode === "session" ? (
+                  sessionLogs.length === 0 ? (
+                    <div className="py-8 text-center text-xs text-gray-500 font-mono">
+                      No completed runs recorded in this session. Run the simulation to completion (all robots reach target or collide) to log metrics.
+                    </div>
+                  ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs font-mono text-left">
                       <thead>
@@ -2546,6 +2686,61 @@ export default function App() {
                       </tbody>
                     </table>
                   </div>
+                )) : (
+                  persistentRecords.length === 0 ? (
+                    <div className="py-8 text-center text-xs text-gray-500 font-mono">
+                      {syncError ? syncError : "No persistent records found on disk."}
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs font-mono text-left">
+                        <thead>
+                          <tr className="text-gray-500 border-b border-gray-850">
+                            <th className="pb-2 font-normal">Timestamp</th>
+                            <th className="pb-2 font-normal">Episode</th>
+                            <th className="pb-2 font-normal">Model</th>
+                            <th className="pb-2 font-normal text-right">Steps</th>
+                            <th className="pb-2 font-normal text-right">Return (Reward)</th>
+                            <th className="pb-2 font-normal text-right">Loss</th>
+                            <th className="pb-2 font-normal text-right">Epsilon</th>
+                            <th className="pb-2 font-normal text-right">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-850">
+                          {persistentRecords.map((rec) => {
+                            const dateStr = rec.timestamp 
+                              ? (rec.timestamp.includes("T") 
+                                ? new Date(rec.timestamp).toLocaleTimeString() 
+                                : rec.timestamp) 
+                              : "N/A";
+                            const getRecordStatusKey = (status) => {
+                              const s = String(status || "").toLowerCase();
+                              if (s.includes("success") || s.includes("goal")) return "goal_reached";
+                              if (s.includes("collision")) return "collision";
+                              if (s.includes("navigating")) return "navigating";
+                              return "idle";
+                            };
+                            return (
+                              <tr key={rec.id} className="hover:bg-gray-900/20">
+                                <td className="py-2.5 text-gray-500">{dateStr}</td>
+                                <td className="py-2.5 text-gray-300">Ep {rec.episode}</td>
+                                <td className="py-2.5 text-gray-400 font-semibold">{rec.model}</td>
+                                <td className="py-2.5 text-right font-semibold text-cyan-400">{rec.steps}</td>
+                                <td className="py-2.5 text-right font-semibold text-cyan-400">{rec.reward.toFixed(1)}</td>
+                                <td className="py-2.5 text-right text-gray-400">{rec.loss > 0 ? rec.loss.toFixed(4) : "N/A"}</td>
+                                <td className="py-2.5 text-right text-gray-400">{rec.epsilon > 0 ? rec.epsilon.toFixed(2) : "N/A"}</td>
+                                <td className="py-2.5 text-right">
+                                  <span style={{ color: statusDisplay(getRecordStatusKey(rec.status)).color }}>
+                                    {statusDisplay(getRecordStatusKey(rec.status)).label}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )
                 )}
               </div>
 

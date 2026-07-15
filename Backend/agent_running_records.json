@@ -36793,5 +36793,137 @@
     "status": "COLLISION",
     "loss": 0.0,
     "epsilon": 0.0
+  },
+  {
+    "id": "run-1783950783644-0",
+    "timestamp": "2026-07-13T19:23:03.644079Z",
+    "episode": 1,
+    "model": "D3QN (R1)",
+    "reward": -77.9,
+    "steps": 7,
+    "status": "COLLISION",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1783950783644-1",
+    "timestamp": "2026-07-13T19:23:03.644079Z",
+    "episode": 1,
+    "model": "DQN Baseline (R1)",
+    "reward": -25.4,
+    "steps": 25,
+    "status": "COLLISION",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1783950786071-0",
+    "timestamp": "2026-07-13T19:23:06.071133Z",
+    "episode": 2,
+    "model": "D3QN (R1)",
+    "reward": -77.9,
+    "steps": 7,
+    "status": "COLLISION",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1783950786071-1",
+    "timestamp": "2026-07-13T19:23:06.071133Z",
+    "episode": 2,
+    "model": "DQN Baseline (R1)",
+    "reward": -74.1,
+    "steps": 9,
+    "status": "COLLISION",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1783950791088-0",
+    "timestamp": "2026-07-13T19:23:11.088126Z",
+    "episode": 3,
+    "model": "D3QN (R1)",
+    "reward": -77.9,
+    "steps": 7,
+    "status": "COLLISION",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1783950791088-1",
+    "timestamp": "2026-07-13T19:23:11.088126Z",
+    "episode": 3,
+    "model": "DQN Baseline (R1)",
+    "reward": -77.8,
+    "steps": 7,
+    "status": "COLLISION",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1783950801863-0",
+    "timestamp": "2026-07-13T19:23:21.863099Z",
+    "episode": 4,
+    "model": "D3QN (R1)",
+    "reward": 656.4,
+    "steps": 46,
+    "status": "GOAL_REACHED",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1783950801863-1",
+    "timestamp": "2026-07-13T19:23:21.863099Z",
+    "episode": 4,
+    "model": "DQN Baseline (R1)",
+    "reward": -77.8,
+    "steps": 7,
+    "status": "COLLISION",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1783950801895-0",
+    "timestamp": "2026-07-13T19:23:21.895012Z",
+    "episode": 5,
+    "model": "D3QN (R1)",
+    "reward": 656.4,
+    "steps": 46,
+    "status": "GOAL_REACHED",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1783950801895-1",
+    "timestamp": "2026-07-13T19:23:21.895012Z",
+    "episode": 5,
+    "model": "DQN Baseline (R1)",
+    "reward": -77.8,
+    "steps": 7,
+    "status": "COLLISION",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1784118573190-0",
+    "timestamp": "2026-07-15T17:59:33.190052Z",
+    "episode": 1,
+    "model": "D3QN (R1)",
+    "reward": 656.9,
+    "steps": 46,
+    "status": "GOAL_REACHED",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1784118573190-1",
+    "timestamp": "2026-07-15T17:59:33.190052Z",
+    "episode": 1,
+    "model": "DQN Baseline (R1)",
+    "reward": -67.8,
+    "steps": 11,
+    "status": "COLLISION",
+    "loss": 0.0,
+    "epsilon": 0.0
   }
 ]

@@ -417,6 +417,27 @@ export default function App() {
   const sessionLogsRef = useRef(sessionLogs);
   useEffect(() => { sessionLogsRef.current = sessionLogs; }, [sessionLogs]);
 
+  // Replay System States
+  const [selectedReplayPath, setSelectedReplayPath] = useState(null);
+  const [replayScrubberIndex, setReplayScrubberIndex] = useState(0);
+  const [isReplayPlaying, setIsReplayPlaying] = useState(false);
+
+  useEffect(() => {
+    let timer;
+    if (isReplayPlaying && selectedReplayPath) {
+      timer = setInterval(() => {
+        setReplayScrubberIndex(prev => {
+          if (prev >= selectedReplayPath.path.length - 1) {
+            setIsReplayPlaying(false);
+            return prev;
+          }
+          return prev + 1;
+        });
+      }, 100);
+    }
+    return () => clearInterval(timer);
+  }, [isReplayPlaying, selectedReplayPath]);
+
   const [logViewMode, setLogViewMode] = useState("session"); // "session" | "persistent"
   const [persistentRecords, setPersistentRecords] = useState([]);
   const [syncingRecords, setSyncingRecords] = useState(false);
@@ -978,7 +999,69 @@ export default function App() {
       ctx.fillText(`R${rIdx + 1}`, robotState.x - 6, robotState.y - 14);
     });
 
-  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos, lidarRays, showPotentialField, showHeatmap, densityGrid, collisionHistory, cooperativeNavigation]);
+    // Draw Replay Path Trail & Active Scrubbed Position
+    if (selectedReplayPath && (
+      (selectedReplayPath.type === "advanced" && robotColor === COLORS.robot) ||
+      (selectedReplayPath.type === "baseline" && robotColor === COLORS.robotB)
+    )) {
+      const pHistory = selectedReplayPath.path;
+      if (pHistory && pHistory.length > 0) {
+        // Draw whole trail history with dashed faint line
+        ctx.beginPath();
+        ctx.setLineDash([5, 5]);
+        ctx.moveTo(pHistory[0].x, pHistory[0].y);
+        pHistory.forEach(pt => {
+          ctx.lineTo(pt.x, pt.y);
+        });
+        ctx.strokeStyle = selectedReplayPath.type === "advanced" 
+          ? "rgba(34, 211, 238, 0.45)" 
+          : "rgba(244, 114, 182, 0.45)";
+        ctx.lineWidth = 2.0;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Draw solid active line up to scrubber index
+        ctx.beginPath();
+        ctx.moveTo(pHistory[0].x, pHistory[0].y);
+        for (let s = 0; s <= replayScrubberIndex; s++) {
+          if (pHistory[s]) {
+            ctx.lineTo(pHistory[s].x, pHistory[s].y);
+          }
+        }
+        ctx.strokeStyle = selectedReplayPath.type === "advanced" 
+          ? "rgba(34, 211, 238, 0.9)" 
+          : "rgba(244, 114, 182, 0.9)";
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        // Draw pulsing circle at active scrubber coordinate
+        const activePt = pHistory[replayScrubberIndex];
+        if (activePt) {
+          const pulse = (Date.now() / 200) % 2;
+          ctx.fillStyle = selectedReplayPath.type === "advanced" 
+            ? "rgba(34, 211, 238, 0.85)" 
+            : "rgba(244, 114, 182, 0.85)";
+          ctx.beginPath();
+          ctx.arc(activePt.x, activePt.y, 8, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = selectedReplayPath.type === "advanced" 
+            ? "rgba(34, 211, 238, 0.4)" 
+            : "rgba(244, 114, 182, 0.4)";
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(activePt.x, activePt.y, 10 + pulse * 6, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Render step index text
+          ctx.fillStyle = COLORS.textPrimary;
+          ctx.font = "bold 9px monospace";
+          ctx.fillText(`Step ${replayScrubberIndex}`, activePt.x - 16, activePt.y - 14);
+        }
+      }
+    }
+
+  }, [obstacles, showLidar, selectedRobotIndex, isDrawingMode, drawingStart, drawingCurrent, goalPos, lidarRays, showPotentialField, showHeatmap, densityGrid, collisionHistory, cooperativeNavigation, selectedReplayPath, replayScrubberIndex]);
 
   // Redraw on state shifts
   useEffect(() => {
@@ -986,7 +1069,7 @@ export default function App() {
       drawScene(canvasRef.current, robots, COLORS.robot);
       drawScene(canvasRefB.current, robotsB, COLORS.robotB);
     }
-  }, [robots, robotsB, obstacles, drawScene, activeTab, viewMode, showPotentialField, showHeatmap, densityGrid, collisionHistory, cooperativeNavigation]);
+  }, [robots, robotsB, obstacles, drawScene, activeTab, viewMode, showPotentialField, showHeatmap, densityGrid, collisionHistory, cooperativeNavigation, selectedReplayPath, replayScrubberIndex]);
 
   // Drag and Drop coordinates mapping
   const getCanvasMousePos = (e, canvas) => {
@@ -1451,8 +1534,8 @@ export default function App() {
           id: Date.now(),
           timestamp: new Date().toLocaleTimeString(),
           layout: presetName,
-          advStats: nextAdvanced.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk })),
-          baseStats: nextBaseline.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk }))
+          advStats: nextAdvanced.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk, pathHistory: r.pathHistory })),
+          baseStats: nextBaseline.map(r => ({ status: r.status, steps: r.stepCount, reward: r.cumulativeReward, jerk: r.jerk, pathHistory: r.pathHistory }))
         };
         setSessionLogs(prev => [newLog, ...prev]);
 
@@ -1795,13 +1878,32 @@ export default function App() {
     }
   };
 
+  // Build lookup lists for mapping chart dots to pathHistory logs
+  const paretoAdvPoints = [];
+  const paretoAdvLookup = [];
+  const paretoBasePoints = [];
+  const paretoBaseLookup = [];
+
+  sessionLogs.forEach(log => {
+    if (Array.isArray(log.advStats)) {
+      log.advStats.forEach((stat, rIdx) => {
+        paretoAdvPoints.push({ x: stat.steps, y: stat.jerk });
+        paretoAdvLookup.push({ logId: log.id, robotIndex: rIdx, type: "advanced", pathHistory: stat.pathHistory });
+      });
+    }
+    if (Array.isArray(log.baseStats)) {
+      log.baseStats.forEach((stat, rIdx) => {
+        paretoBasePoints.push({ x: stat.steps, y: stat.jerk });
+        paretoBaseLookup.push({ logId: log.id, robotIndex: rIdx, type: "baseline", pathHistory: stat.pathHistory });
+      });
+    }
+  });
+
   const paretoScatterData = {
     datasets: [
       {
         label: "Advanced D3QN",
-        data: sessionLogs.flatMap(log => 
-          log.advStats.map(stat => ({ x: stat.steps, y: stat.jerk }))
-        ),
+        data: paretoAdvPoints,
         backgroundColor: COLORS.robot,
         borderColor: COLORS.robot,
         pointRadius: 6,
@@ -1809,9 +1911,7 @@ export default function App() {
       },
       {
         label: "Baseline DQN",
-        data: sessionLogs.flatMap(log => 
-          log.baseStats.map(stat => ({ x: stat.steps, y: stat.jerk }))
-        ),
+        data: paretoBasePoints,
         backgroundColor: COLORS.robotB,
         borderColor: COLORS.robotB,
         pointRadius: 6,
@@ -1823,6 +1923,37 @@ export default function App() {
   const paretoChartOptions = {
     responsive: true,
     maintainAspectRatio: false,
+    onClick: (event, elements) => {
+      if (elements && elements.length > 0) {
+        const element = elements[0];
+        const datasetIndex = element.datasetIndex;
+        const dataIndex = element.index;
+        
+        if (datasetIndex === 0 && paretoAdvLookup[dataIndex]) {
+          const lookup = paretoAdvLookup[dataIndex];
+          if (lookup.pathHistory && lookup.pathHistory.length > 0) {
+            setSelectedReplayPath({
+              path: lookup.pathHistory,
+              type: "advanced",
+              robotIndex: lookup.robotIndex
+            });
+            setReplayScrubberIndex(lookup.pathHistory.length - 1);
+            setIsReplayPlaying(false);
+          }
+        } else if (datasetIndex === 1 && paretoBaseLookup[dataIndex]) {
+          const lookup = paretoBaseLookup[dataIndex];
+          if (lookup.pathHistory && lookup.pathHistory.length > 0) {
+            setSelectedReplayPath({
+              path: lookup.pathHistory,
+              type: "baseline",
+              robotIndex: lookup.robotIndex
+            });
+            setReplayScrubberIndex(lookup.pathHistory.length - 1);
+            setIsReplayPlaying(false);
+          }
+        }
+      }
+    },
     plugins: {
       legend: { display: true, labels: { color: COLORS.textDim, boxWidth: 10, font: { size: 10 } } },
       tooltip: {
@@ -2014,6 +2145,79 @@ export default function App() {
                 </button>
               </div>
             </div>
+
+            {selectedReplayPath && (
+              <div className="mt-4 p-4 rounded-xl border border-indigo-900 bg-[#0f1319] space-y-3 font-mono text-xs shadow-lg animate-pulse-slow">
+                <div className="flex items-center justify-between border-b border-indigo-950 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-ping"></span>
+                    <span className="font-bold text-gray-300">
+                      PARETO TRAIL REPLAY MODE ({selectedReplayPath.type.toUpperCase()})
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setSelectedReplayPath(null);
+                      setIsReplayPlaying(false);
+                    }}
+                    className="px-2 py-1 rounded bg-rose-950/60 border border-rose-800 text-rose-300 font-bold hover:bg-rose-900 cursor-pointer"
+                  >
+                    ✕ Exit Replay
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setIsReplayPlaying(!isReplayPlaying)}
+                      className="px-4 py-2 rounded bg-indigo-950 border border-indigo-850 hover:bg-indigo-900 text-indigo-300 font-bold cursor-pointer"
+                    >
+                      {isReplayPlaying ? "⏸ Pause" : "▶ Play"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsReplayPlaying(false);
+                        setReplayScrubberIndex(prev => Math.max(0, prev - 1));
+                      }}
+                      className="px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 cursor-pointer"
+                    >
+                      Step ⏴
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsReplayPlaying(false);
+                        setReplayScrubberIndex(prev => Math.min(selectedReplayPath.path.length - 1, prev + 1));
+                      }}
+                      className="px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 cursor-pointer"
+                    >
+                      ⏵ Step
+                    </button>
+                  </div>
+
+                  <div className="flex-1 min-w-[200px] flex items-center gap-3">
+                    <span className="text-gray-500">Step:</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max={selectedReplayPath.path.length - 1}
+                      value={replayScrubberIndex}
+                      onChange={(e) => {
+                        setIsReplayPlaying(false);
+                        setReplayScrubberIndex(Number(e.target.value));
+                      }}
+                      className="flex-1 cursor-pointer accent-cyan-400 h-1.5 bg-gray-800 rounded-lg appearance-none"
+                    />
+                    <span className="font-bold text-cyan-400">
+                      {replayScrubberIndex} / {selectedReplayPath.path.length - 1}
+                    </span>
+                  </div>
+
+                  <div className="text-[11px] text-gray-400">
+                    Coords: <span className="text-cyan-300">({selectedReplayPath.path[replayScrubberIndex]?.x?.toFixed(1)}, {selectedReplayPath.path[replayScrubberIndex]?.y?.toFixed(1)})</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {errorMsg && (
               <div className="p-3 bg-red-950/20 border border-red-900 rounded text-red-400 text-xs font-mono">

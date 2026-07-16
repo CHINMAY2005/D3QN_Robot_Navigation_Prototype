@@ -36925,5 +36925,49 @@
     "status": "COLLISION",
     "loss": 0.0,
     "epsilon": 0.0
+  },
+  {
+    "id": "run-1784204307460-0",
+    "timestamp": "2026-07-16T17:48:27.459992Z",
+    "episode": 1,
+    "model": "D3QN (R1)",
+    "reward": 588.7,
+    "steps": 25,
+    "status": "GOAL_REACHED",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1784204307460-1",
+    "timestamp": "2026-07-16T17:48:27.459992Z",
+    "episode": 1,
+    "model": "DQN Baseline (R1)",
+    "reward": 568.5,
+    "steps": 23,
+    "status": "GOAL_REACHED",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1784204307624-0",
+    "timestamp": "2026-07-16T17:48:27.624343Z",
+    "episode": 2,
+    "model": "D3QN (R1)",
+    "reward": 588.7,
+    "steps": 25,
+    "status": "GOAL_REACHED",
+    "loss": 0.0,
+    "epsilon": 0.0
+  },
+  {
+    "id": "run-1784204307624-1",
+    "timestamp": "2026-07-16T17:48:27.624343Z",
+    "episode": 2,
+    "model": "DQN Baseline (R1)",
+    "reward": 568.5,
+    "steps": 23,
+    "status": "GOAL_REACHED",
+    "loss": 0.0,
+    "epsilon": 0.0
   }
 ]

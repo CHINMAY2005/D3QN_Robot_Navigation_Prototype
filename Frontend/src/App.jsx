@@ -63,7 +63,7 @@ const COLORS = {
 // Raycasting & Spatial Sensing (LiDAR)
 // --------------------------------------------------------------------------
 
-function calculateLidarRanges(x, y, theta, obstaclesList, numRays = 8, fovDeg = 360, maxRange = 300) {
+function calculateLidarRanges(x, y, theta, obstaclesList, numRays = 8, fovDeg = 360, maxRange = 300, noiseLevel = 0) {
   const ranges = [];
   const fovRad = (fovDeg * Math.PI) / 180;
   const startAngle = fovDeg === 360 ? 0 : -fovRad / 2;
@@ -109,7 +109,14 @@ function calculateLidarRanges(x, y, theta, obstaclesList, numRays = 8, fovDeg = 
       }
     });
 
-    ranges.push(Math.min(tMin, maxRange));
+    let finalDist = Math.min(tMin, maxRange);
+    if (noiseLevel > 0) {
+      const u1 = Math.random() || 0.0001;
+      const u2 = Math.random();
+      const randNormal = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+      finalDist = Math.max(0, Math.min(maxRange, finalDist + randNormal * noiseLevel * 50));
+    }
+    ranges.push(finalDist);
   }
 
   return ranges;
@@ -438,6 +445,13 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isReplayPlaying, selectedReplayPath]);
 
+  // D3QN Solver / Limitations States
+  const [sensorNoise, setSensorNoise] = useState(0);
+  const [actuatorNoise, setActuatorNoise] = useState(0);
+  const [continuousSteerMode, setContinuousSteerMode] = useState(false);
+  const [goalPatrolMode, setGoalPatrolMode] = useState(false);
+  const [patrolAngle, setPatrolAngle] = useState(0);
+
   const [logViewMode, setLogViewMode] = useState("session"); // "session" | "persistent"
   const [persistentRecords, setPersistentRecords] = useState([]);
   const [syncingRecords, setSyncingRecords] = useState(false);
@@ -535,6 +549,10 @@ export default function App() {
   const goalPosRef = useRef(goalPos);
   const momentumRef = useRef(momentum);
   const driftRef = useRef(drift);
+  const sensorNoiseRef = useRef(sensorNoise);
+  const actuatorNoiseRef = useRef(actuatorNoise);
+  const continuousSteerModeRef = useRef(continuousSteerMode);
+  const goalPatrolModeRef = useRef(goalPatrolMode);
 
   // Initialize robot state lists
   const initializeRobots = useCallback(() => {
@@ -614,6 +632,10 @@ export default function App() {
   useEffect(() => { momentumRef.current = momentum; }, [momentum]);
   useEffect(() => { driftRef.current = drift; }, [drift]);
   useEffect(() => { cooperativeNavigationRef.current = cooperativeNavigation; }, [cooperativeNavigation]);
+  useEffect(() => { sensorNoiseRef.current = sensorNoise; }, [sensorNoise]);
+  useEffect(() => { actuatorNoiseRef.current = actuatorNoise; }, [actuatorNoise]);
+  useEffect(() => { continuousSteerModeRef.current = continuousSteerMode; }, [continuousSteerMode]);
+  useEffect(() => { goalPatrolModeRef.current = goalPatrolMode; }, [goalPatrolMode]);
 
   const generateProceduralMaze = () => {
     const dividers = [150, 260, 370];
@@ -901,7 +923,7 @@ export default function App() {
 
       // Draw LiDAR range beams for selected robot
       if (showLidar && isSelected) {
-        const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, renderObstacles, lidarRays, lidarFov, lidarRange);
+        const ranges = calculateLidarRanges(robotState.x, robotState.y, robotState.theta, renderObstacles, lidarRays, lidarFov, lidarRange, sensorNoise);
         const fovRad = (lidarFov * Math.PI) / 180;
         const startAngle = lidarFov === 360 ? 0 : -fovRad / 2;
         const angleStep = lidarFov === 360 ? (Math.PI * 2) / lidarRays : fovRad / (lidarRays > 1 ? lidarRays - 1 : 1);
@@ -1225,7 +1247,15 @@ export default function App() {
 
     // 1. Update Goal Target Position if enabled (Sine-wave vertical movement)
     let currentGoal = goalPosRef.current;
-    if (movingGoalRef.current) {
+    if (goalPatrolModeRef.current) {
+      const step = activeRobots[0] ? activeRobots[0].stepCount + 1 : 1;
+      const angle = step * 0.08;
+      currentGoal = {
+        x: 280 + 130 * Math.cos(angle),
+        y: 200 + 130 * Math.sin(angle)
+      };
+      setGoalPos(currentGoal);
+    } else if (movingGoalRef.current) {
       const step = activeRobots[0] ? activeRobots[0].stepCount + 1 : 1;
       const goalY = 200 + 90 * Math.sin(step * 0.15);
       currentGoal = { x: 520, y: goalY };
@@ -1325,7 +1355,7 @@ export default function App() {
           momentum: momentumRef.current,
           drift: driftRef.current
         }),
-      }).then(res => res.json()).then(data => ({ index, data, action: actionObj.action }));
+      }).then(res => res.json()).then(data => ({ index, data, action: actionObj.action, robotObstacles }));
     });
 
     // Construct promises for active baseline DQN robots
@@ -1373,7 +1403,7 @@ export default function App() {
           momentum: momentumRef.current,
           drift: driftRef.current
         }),
-      }).then(res => res.json()).then(data => ({ index, data, action: actionObjB.action }));
+      }).then(res => res.json()).then(data => ({ index, data, action: actionObjB.action, robotObstacles: robotObstaclesB }));
     });
 
     try {
@@ -1388,11 +1418,52 @@ export default function App() {
       // Update D3QN robots
       resList.forEach(res => {
         if (!res) return;
-        const { index, data, action } = res;
+        const { index, data, action, robotObstacles } = res;
         const current = nextAdvanced[index];
 
-        const desiredTheta = bearingToGoal(data.x, data.y, currentGoal);
-        const thetaErr = normalizeAngle(desiredTheta - data.theta);
+        const omega = ANGULAR_VELOCITIES[action];
+        let smoothedOmega = omega;
+        let finalX = data.x;
+        let finalY = data.y;
+        let noisyTheta = data.theta;
+
+        if (continuousSteerModeRef.current) {
+          const prevOmega = current.prevOmega || 0;
+          smoothedOmega = prevOmega + (omega - prevOmega) * 0.25;
+
+          const V = 15.0;
+          noisyTheta = normalizeAngle(current.theta + smoothedOmega);
+          finalX = current.x + V * Math.cos(noisyTheta);
+          finalY = current.y + V * Math.sin(noisyTheta);
+
+          let collided = false;
+          for (const rect of robotObstacles) {
+            const closestX = Math.max(rect.x, Math.min(finalX, rect.x + rect.width));
+            const closestY = Math.max(rect.y, Math.min(finalY, rect.y + rect.height));
+            if (Math.hypot(finalX - closestX, finalY - closestY) < ROBOT_RADIUS) {
+              collided = true;
+              break;
+            }
+          }
+          if (finalX <= 0 || finalX >= CANVAS_WIDTH || finalY <= 0 || finalY >= CANVAS_HEIGHT) {
+            collided = true;
+          }
+          if (collided) {
+            data.status = "collision";
+          } else if (Math.hypot(currentGoal.x - finalX, currentGoal.y - finalY) < GOAL_THRESHOLD) {
+            data.status = "goal_reached";
+          }
+        }
+
+        if (actuatorNoiseRef.current > 0 && data.status === "navigating") {
+          const u1 = Math.random() || 0.0001;
+          const u2 = Math.random();
+          const randNormal = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+          noisyTheta = normalizeAngle(noisyTheta + randNormal * actuatorNoiseRef.current);
+        }
+
+        const desiredTheta = bearingToGoal(finalX, finalY, currentGoal);
+        const thetaErr = normalizeAngle(desiredTheta - noisyTheta);
         const rThetaVal = data.r_theta;
         const rDVal = data.r_d;
         const baseRew = rDVal * rThetaVal;
@@ -1400,30 +1471,30 @@ export default function App() {
         if (data.status === "goal_reached") bonusVal = goalRewardRef.current;
         if (data.status === "collision") bonusVal = collisionPenaltyRef.current;
 
-        const omega = ANGULAR_VELOCITIES[action];
-        const deltaOmega = Math.abs(omega - current.lastOmega);
+        const deltaOmega = Math.abs(smoothedOmega - (current.prevOmega || 0));
         const nextJerk = current.jerk + deltaOmega;
 
         nextAdvanced[index] = {
           ...current,
-          x: data.x,
-          y: data.y,
-          theta: data.theta,
-          prevDistance: data.distance,
+          x: finalX,
+          y: finalY,
+          theta: noisyTheta,
+          prevDistance: Math.hypot(currentGoal.x - finalX, currentGoal.y - finalY),
           status: data.status,
           stepCount: current.stepCount + 1,
           lastReward: data.reward,
           cumulativeReward: current.cumulativeReward + data.reward,
           jerk: nextJerk,
-          lastOmega: omega,
-          vx: data.vx,
-          vy: data.vy,
-          omega: data.omega,
+          lastOmega: smoothedOmega,
+          prevOmega: smoothedOmega,
+          vx: finalX - current.x,
+          vy: finalY - current.y,
+          omega: smoothedOmega,
           pathHistory: [...current.pathHistory, { x: current.x, y: current.y }],
           rewardHistory: [...current.rewardHistory, data.reward].slice(-100),
           liveRewardDetails: {
             dPrev: current.prevDistance,
-            dCurr: data.distance,
+            dCurr: Math.hypot(currentGoal.x - finalX, currentGoal.y - finalY),
             thetaError: thetaErr,
             rTheta: rThetaVal,
             rD: rDVal,
@@ -1437,11 +1508,52 @@ export default function App() {
       // Update Baseline robots
       resListB.forEach(res => {
         if (!res) return;
-        const { index, data, action } = res;
+        const { index, data, action, robotObstacles } = res;
         const current = nextBaseline[index];
 
-        const desiredTheta = bearingToGoal(data.x, data.y, currentGoal);
-        const thetaErr = normalizeAngle(desiredTheta - data.theta);
+        const omega = ANGULAR_VELOCITIES[action];
+        let smoothedOmega = omega;
+        let finalX = data.x;
+        let finalY = data.y;
+        let noisyTheta = data.theta;
+
+        if (continuousSteerModeRef.current) {
+          const prevOmega = current.prevOmega || 0;
+          smoothedOmega = prevOmega + (omega - prevOmega) * 0.25;
+
+          const V = 15.0;
+          noisyTheta = normalizeAngle(current.theta + smoothedOmega);
+          finalX = current.x + V * Math.cos(noisyTheta);
+          finalY = current.y + V * Math.sin(noisyTheta);
+
+          let collided = false;
+          for (const rect of robotObstacles) {
+            const closestX = Math.max(rect.x, Math.min(finalX, rect.x + rect.width));
+            const closestY = Math.max(rect.y, Math.min(finalY, rect.y + rect.height));
+            if (Math.hypot(finalX - closestX, finalY - closestY) < ROBOT_RADIUS) {
+              collided = true;
+              break;
+            }
+          }
+          if (finalX <= 0 || finalX >= CANVAS_WIDTH || finalY <= 0 || finalY >= CANVAS_HEIGHT) {
+            collided = true;
+          }
+          if (collided) {
+            data.status = "collision";
+          } else if (Math.hypot(currentGoal.x - finalX, currentGoal.y - finalY) < GOAL_THRESHOLD) {
+            data.status = "goal_reached";
+          }
+        }
+
+        if (actuatorNoiseRef.current > 0 && data.status === "navigating") {
+          const u1 = Math.random() || 0.0001;
+          const u2 = Math.random();
+          const randNormal = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+          noisyTheta = normalizeAngle(noisyTheta + randNormal * actuatorNoiseRef.current);
+        }
+
+        const desiredTheta = bearingToGoal(finalX, finalY, currentGoal);
+        const thetaErr = normalizeAngle(desiredTheta - noisyTheta);
         const rThetaVal = data.r_theta;
         const rDVal = data.r_d;
         const baseRew = rDVal + rThetaVal - 2.0;
@@ -1449,30 +1561,30 @@ export default function App() {
         if (data.status === "goal_reached") bonusVal = goalRewardRef.current;
         if (data.status === "collision") bonusVal = collisionPenaltyRef.current;
 
-        const omega = ANGULAR_VELOCITIES[action];
-        const deltaOmega = Math.abs(omega - current.lastOmega);
+        const deltaOmega = Math.abs(smoothedOmega - (current.prevOmega || 0));
         const nextJerk = current.jerk + deltaOmega;
 
         nextBaseline[index] = {
           ...current,
-          x: data.x,
-          y: data.y,
-          theta: data.theta,
-          prevDistance: data.distance,
+          x: finalX,
+          y: finalY,
+          theta: noisyTheta,
+          prevDistance: Math.hypot(currentGoal.x - finalX, currentGoal.y - finalY),
           status: data.status,
           stepCount: current.stepCount + 1,
           lastReward: data.reward,
           cumulativeReward: current.cumulativeReward + data.reward,
           jerk: nextJerk,
-          lastOmega: omega,
-          vx: data.vx,
-          vy: data.vy,
-          omega: data.omega,
+          lastOmega: smoothedOmega,
+          prevOmega: smoothedOmega,
+          vx: finalX - current.x,
+          vy: finalY - current.y,
+          omega: smoothedOmega,
           pathHistory: [...current.pathHistory, { x: current.x, y: current.y }],
           rewardHistory: [...current.rewardHistory, data.reward].slice(-100),
           liveRewardDetails: {
             dPrev: current.prevDistance,
-            dCurr: data.distance,
+            dCurr: Math.hypot(currentGoal.x - finalX, currentGoal.y - finalY),
             thetaError: thetaErr,
             rTheta: rThetaVal,
             rD: rDVal,
@@ -2056,6 +2168,18 @@ export default function App() {
               }}
             >
               Training Convergence Monitor
+            </button>
+
+            <button
+              onClick={() => { setActiveTab("learning"); }}
+              className="px-4 py-1.5 rounded text-xs uppercase tracking-wider font-semibold border transition-all cursor-pointer"
+              style={{
+                borderColor: activeTab === "learning" ? COLORS.robot : COLORS.panelBorder,
+                color: activeTab === "learning" ? COLORS.robot : COLORS.textDim,
+                backgroundColor: activeTab === "learning" ? "rgba(0, 242, 254, 0.08)" : "transparent"
+              }}
+            >
+              🎓 D3QN Limitations & Solutions
             </button>
             
             <button
@@ -3192,7 +3316,7 @@ export default function App() {
               {/* Terminal streaming log */}
               <div className="bg-[#07090b] border border-gray-850 rounded-lg p-3 font-mono text-[10px] h-32 overflow-y-auto space-y-1 text-left">
                 {trainingLogs.length === 0 ? (
-                  <div className="text-gray-600 text-center py-8">
+                  <div className="text-gray-650 text-center py-8">
                     Console ready. Press "Start Training Simulator" to begin telemetry streaming...
                   </div>
                 ) : (
@@ -3271,6 +3395,208 @@ export default function App() {
                       Press "Start Training" to populate learning graphs.
                     </div>
                   )}
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+        )}
+
+        {/* Tab 3: Learning Center & Interactive Solvers */}
+        {activeTab === "learning" && (
+          <div className="space-y-6">
+            
+            {/* Interactive Solver Controls Panel */}
+            <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-4">
+              <div>
+                <h2 className="text-sm font-bold uppercase tracking-wider text-cyan-400">
+                  D3QN Robustness Solver & Emulator Controls
+                </h2>
+                <p className="text-xs text-gray-400 mt-1">
+                  Adjust these settings to inject real-world noise, continuous dynamics, and path tracking challenges, then switch back to the "Live Comparison Canvas" to see them in action!
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 pt-2 font-mono text-xs">
+                
+                {/* Solver 1: Sensor Noise (Domain Randomization) */}
+                <div className="p-4 rounded-lg bg-[#0b0f12] border border-gray-850 space-y-3">
+                  <div className="flex justify-between items-center border-b border-gray-850 pb-1.5">
+                    <span className="font-bold text-gray-300">1. LiDAR Sensor Noise</span>
+                    <span className="text-cyan-400 font-bold">{(sensorNoise * 100).toFixed(0)}%</span>
+                  </div>
+                  <p className="text-[10px] text-gray-500">Injects Gaussian noise into LiDAR range finders to simulate dusty or reflective surfaces.</p>
+                  <input
+                    type="range"
+                    min="0"
+                    max="0.30"
+                    step="0.05"
+                    value={sensorNoise}
+                    onChange={(e) => setSensorNoise(Number(e.target.value))}
+                    className="w-full accent-cyan-400 cursor-pointer"
+                  />
+                </div>
+
+                {/* Solver 2: Actuator Noise (Drift Calibration) */}
+                <div className="p-4 rounded-lg bg-[#0b0f12] border border-gray-850 space-y-3">
+                  <div className="flex justify-between items-center border-b border-gray-850 pb-1.5">
+                    <span className="font-bold text-gray-300">2. Actuator Drift Noise</span>
+                    <span className="text-pink-400 font-bold">{actuatorNoise.toFixed(2)} rad</span>
+                  </div>
+                  <p className="text-[10px] text-gray-500">Injects steering heading drift (wind/motor slip) demanding rapid policy corrections.</p>
+                  <input
+                    type="range"
+                    min="0"
+                    max="0.20"
+                    step="0.04"
+                    value={actuatorNoise}
+                    onChange={(e) => setActuatorNoise(Number(e.target.value))}
+                    className="w-full accent-pink-400 cursor-pointer"
+                  />
+                </div>
+
+                {/* Solver 3: Continuous Steering (SAC Emulator) */}
+                <div className="p-4 rounded-lg bg-[#0b0f12] border border-gray-850 space-y-3 flex flex-col justify-between">
+                  <div>
+                    <div className="flex justify-between items-center border-b border-gray-850 pb-1.5 mb-2">
+                      <span className="font-bold text-gray-300">3. Continuous Steer Mode</span>
+                      <input
+                        type="checkbox"
+                        checked={continuousSteerMode}
+                        onChange={(e) => setContinuousSteerMode(e.target.checked)}
+                        className="w-4 h-4 cursor-pointer accent-emerald-500 rounded"
+                      />
+                    </div>
+                    <p className="text-[10px] text-gray-500">Smooths discrete steering angle snapping using motor lag filters, minimizing trajectory jerk.</p>
+                  </div>
+                  <span className={`text-[10px] font-bold ${continuousSteerMode ? "text-emerald-400" : "text-gray-650"}`}>
+                    {continuousSteerMode ? "✓ Active (Continuous SAC/TD3)" : "✗ Inactive (Discrete)"}
+                  </span>
+                </div>
+
+                {/* Solver 4: Orbiting Goal Target (Dynamic Tracking) */}
+                <div className="p-4 rounded-lg bg-[#0b0f12] border border-gray-850 space-y-3 flex flex-col justify-between">
+                  <div>
+                    <div className="flex justify-between items-center border-b border-gray-850 pb-1.5 mb-2">
+                      <span className="font-bold text-gray-300">4. Dynamic Goal Patrol</span>
+                      <input
+                        type="checkbox"
+                        checked={goalPatrolMode}
+                        onChange={(e) => setGoalPatrolMode(e.target.checked)}
+                        className="w-4 h-4 cursor-pointer accent-amber-500 rounded"
+                      />
+                    </div>
+                    <p className="text-[10px] text-gray-500">Makes the target goal travel along a circular path. Evaluates real-time path re-planning.</p>
+                  </div>
+                  <span className={`text-[10px] font-bold ${goalPatrolMode ? "text-amber-400" : "text-gray-650"}`}>
+                    {goalPatrolMode ? "✓ Active (Orbiting Patrol)" : "✗ Inactive (Static Goal)"}
+                  </span>
+                </div>
+
+              </div>
+            </div>
+
+            {/* D3QN Limitations & State-of-the-Art Solutions Core Section */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              
+              {/* Limitation 1 */}
+              <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-3">
+                <div className="flex items-center gap-2 border-b border-gray-850 pb-2">
+                  <span className="text-rose-400 text-sm font-bold">01. ACTION DISCRETIZATION</span>
+                </div>
+                <div className="space-y-2 text-xs">
+                  <div className="p-2.5 rounded bg-red-950/15 border border-red-900/30 text-red-300">
+                    <span className="font-bold uppercase block text-[9px] text-red-400 mb-1">The Limitation:</span>
+                    D3QN evaluates discrete actions. Steering adjustments snap abruptly (causing large jerk values), and continuous torque actions are impossible.
+                  </div>
+                  <div className="p-2.5 rounded bg-emerald-950/15 border border-emerald-900/30 text-emerald-300">
+                    <span className="font-bold uppercase block text-[9px] text-emerald-400 mb-1">The Solution:</span>
+                    Transition to **Actor-Critic (SAC / TD3)**. These algorithms output continuous steer outputs directly, optimizing smooth, energy-efficient trajectories.
+                  </div>
+                </div>
+              </div>
+
+              {/* Limitation 2 */}
+              <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-3">
+                <div className="flex items-center gap-2 border-b border-gray-850 pb-2">
+                  <span className="text-rose-400 text-sm font-bold">02. SAMPLE INEFFICIENCY</span>
+                </div>
+                <div className="space-y-2 text-xs">
+                  <div className="p-2.5 rounded bg-red-950/15 border border-red-900/30 text-red-300">
+                    <span className="font-bold uppercase block text-[9px] text-red-400 mb-1">The Limitation:</span>
+                    Requires millions of steps of exploration. Training directly on physical robots is impossible due to hardware crash risks.
+                  </div>
+                  <div className="p-2.5 rounded bg-emerald-950/15 border border-emerald-900/30 text-emerald-300">
+                    <span className="font-bold uppercase block text-[9px] text-emerald-400 mb-1">The Solution:</span>
+                    **Domain Randomization (DR) & World Models**. We randomize physics limits (friction, masses) in simulation so the policy transfers directly to physical units.
+                  </div>
+                </div>
+              </div>
+
+              {/* Limitation 3 */}
+              <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-3">
+                <div className="flex items-center gap-2 border-b border-gray-850 pb-2">
+                  <span className="text-rose-400 text-sm font-bold">03. REWARD TUNING DILEMMA</span>
+                </div>
+                <div className="space-y-2 text-xs">
+                  <div className="p-2.5 rounded bg-red-950/15 border border-red-900/30 text-red-300">
+                    <span className="font-bold uppercase block text-[9px] text-red-400 mb-1">The Limitation:</span>
+                    Finding correct reward coefficients is tedious. Small errors cause robots to turn in loops or collision-prone meanders.
+                  </div>
+                  <div className="p-2.5 rounded bg-emerald-950/15 border border-emerald-900/30 text-emerald-300">
+                    <span className="font-bold uppercase block text-[9px] text-emerald-400 mb-1">The Solution:</span>
+                    **Inverse RL (IRL)** and **Hindsight Experience Replay (HER)**. The agent learns reward shapes by observing expert drivers, or treats failures as goal entries.
+                  </div>
+                </div>
+              </div>
+
+              {/* Limitation 4 */}
+              <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-3">
+                <div className="flex items-center gap-2 border-b border-gray-850 pb-2">
+                  <span className="text-rose-400 text-sm font-bold">04. VALUE IDENTIFIABILITY</span>
+                </div>
+                <div className="space-y-2 text-xs">
+                  <div className="p-2.5 rounded bg-red-950/15 border border-red-900/30 text-red-300">
+                    <span className="font-bold uppercase block text-[9px] text-red-400 mb-1">The Limitation:</span>
+                    Q-values are $V(s) + A(s,a)$ but splits are mathematically unidentifiable. Mean subtraction helps but restricts absolute state value interpretability.
+                  </div>
+                  <div className="p-2.5 rounded bg-emerald-950/15 border border-emerald-900/30 text-emerald-300">
+                    <span className="font-bold uppercase block text-[9px] text-emerald-400 mb-1">The Solution:</span>
+                    **Distributional RL (C51 / QR-DQN)**. Predicts full probability distribution of future outcomes instead of a scalar mean value, stabilizing updates.
+                  </div>
+                </div>
+              </div>
+
+              {/* Limitation 5 */}
+              <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] space-y-3">
+                <div className="flex items-center gap-2 border-b border-gray-850 pb-2">
+                  <span className="text-rose-400 text-sm font-bold">05. PARTIAL OBSERVABILITY (POMDP)</span>
+                </div>
+                <div className="space-y-2 text-xs">
+                  <div className="p-2.5 rounded bg-red-950/15 border border-red-900/30 text-red-300">
+                    <span className="font-bold uppercase block text-[9px] text-red-400 mb-1">The Limitation:</span>
+                    Robot loses track of obstacles that exit its sensor beam or are occluded. Standard D3QN has no internal memory.
+                  </div>
+                  <div className="p-2.5 rounded bg-emerald-950/15 border border-emerald-900/30 text-emerald-300">
+                    <span className="font-bold uppercase block text-[9px] text-emerald-400 mb-1">The Solution:</span>
+                    **DRQN (Recurrent memory)**. Augments networks with recurrent LSTMs or GRU cells, maintaining a state sequence memory of historical sensor readings.
+                  </div>
+                </div>
+              </div>
+
+              {/* Limitation 6 - Summary card */}
+              <div className="p-5 rounded-xl border border-gray-800 bg-[#11171b] flex flex-col justify-between">
+                <div>
+                  <h3 className="text-xs uppercase font-bold tracking-wider text-cyan-400 border-b border-gray-850 pb-2">
+                    Research Conclusions
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-3 font-mono leading-relaxed">
+                    While D3QN is highly effective for basic obstacle avoidance and bearing alignment tasks, robust industrial applications require combining lookahead trajectory rollouts with continuous actor-critic control spaces and LSTM recurrence memory.
+                  </p>
+                </div>
+                <div className="text-[10px] text-gray-500 font-mono text-right mt-4">
+                  D3QN Evaluation Framework v2.0
                 </div>
               </div>
 
